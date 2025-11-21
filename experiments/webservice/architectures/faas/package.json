@@ -1,0 +1,12 @@
+{
+  "name": "faas-function",
+  "version": "1.0.0",
+  "description": "FaaS function for webservice experiment",
+  "main": "index.js",
+  "dependencies": {
+    "@befaas/lib": "*"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}
