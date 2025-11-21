@@ -8,9 +8,11 @@ config:
   processor: '{{ $processEnvironment.PROCESSOR_DIR }}/logger.js'
 
   payload:
-    path: 'usernames.csv'
+    path: 'users.csv'
     fields:
-      - 'username'
+      - 'userName'
+      - 'name'
+      - 'password'
   variables:
     product:
       - 'QWERTY'
@@ -49,7 +51,8 @@ scenarios:
           url: '{{ frontend }}/setUser'
           followRedirect: false
           form:
-            userName: { { username } }
+            userName: '{{ userName }}'
+            password: '{{ password }}'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
       - get:
@@ -77,7 +80,8 @@ scenarios:
           url: '{{ frontend }}/setUser'
           followRedirect: true
           form:
-            userName: '{{ username }}'
+            userName: '{{ userName }}'
+            password: '{{ password }}'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
       - get:

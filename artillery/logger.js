@@ -2,6 +2,7 @@ const lib = require('@befaas/lib')
 const fs = require('fs')
 const path = require('path')
 const { performance } = require('perf_hooks')
+const authConfig = require('./authConfig')
 
 
 const LIB_VERSION = require('@befaas/lib/package.json').version
@@ -40,14 +41,35 @@ function logEvent(event) {
   )
 }
 
-function beforeRequest(requestParams, context, ee, next) {
+async function beforeRequest(requestParams, context, ee, next) {
   const url = resolveVar(requestParams.url, context)
   const contextId = lib.helper.generateRandomID()
   const xPair = `${contextId}-${lib.helper.generateRandomID()}`
-  requestParams.headers = {}
+
+  if (!requestParams.headers) {
+    requestParams.headers = {}
+  }
+
   requestParams.headers['x-context'] = contextId
   requestParams.headers['x-pair'] = xPair
-  logEvent({ url, contextId, xPair, type: 'before' })
+
+  // Add authentication header if auth is enabled
+  const authCfg = authConfig.getAuthConfig()
+  if (authCfg.enabled && context.vars.userName && context.vars.password) {
+    try {
+      const token = await authConfig.authenticateUser(
+        context.vars.userName,
+        context.vars.password
+      )
+      if (token) {
+        requestParams.headers['Authorization'] = `Bearer ${token}`
+      }
+    } catch (error) {
+      console.error(`Failed to authenticate user ${context.vars.userName}:`, error.message)
+    }
+  }
+
+  logEvent({ url, contextId, xPair, type: 'before', authenticated: !!requestParams.headers['Authorization'] })
   return next()
 }
 
