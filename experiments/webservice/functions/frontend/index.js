@@ -45,6 +45,10 @@ function getUserName (ctx) {
   return storageObj.userName || ''
 }
 
+function getUserPassword (ctx) {
+  return storageObj.userPassword || ''
+}
+
 function getCartSize (ctx) {
   return _.parseInt(storageObj.cartSize) || 0
 }
@@ -293,8 +297,13 @@ module.exports = lib.serverless.router(async router => {
   router.post('/setUser', async (ctx, next) => {
     getCookies(ctx)
     const userName = ctx.request.body.userName
+    const password = ctx.request.body.password
+
+    // Store both username and password in session (plaintext is fine for testing)
     emptyCartSize(ctx)
     storageObj.userName = userName
+    storageObj.userPassword = password || ''
+
     ctx.type = 'application/json'
     ctx.response.redirect('back')
     storeCookies(ctx)
@@ -304,6 +313,7 @@ module.exports = lib.serverless.router(async router => {
     getCookies(ctx)
     emptyCartSize(ctx)
     storageObj.userName = ''
+    storageObj.userPassword = ''
     ctx.type = 'application/json'
     ctx.response.redirect('back')
     storeCookies(ctx)
@@ -312,6 +322,7 @@ module.exports = lib.serverless.router(async router => {
   router.post('/logoutAndLeave', async (ctx, next) => {
     getCookies(ctx)
     storageObj.userName = ''
+    storageObj.userPassword = ''
     emptyCartSize(ctx)
     ctx.type = 'application/json'
     ctx.response.redirect('./')

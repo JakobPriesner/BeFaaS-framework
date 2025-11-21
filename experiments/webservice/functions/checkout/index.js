@@ -1,4 +1,5 @@
 const lib = require('@befaas/lib')
+const { verifyJWT } = require('./auth')
 
 /**
  *
@@ -14,21 +15,21 @@ const lib = require('@befaas/lib')
  *
  * Payload Body:
  {
-  "userId": "56437829",
-  "userCurrency": "PHP",
-  "address": {
-    "streetAddress": "Schillerstrasse 9",
-    "city": "Munich",
-    "state": "Bavaria",
-    "country": "Germany"
-  },
-  "email": "mail@foo",
-  "creditCard": {
-    "creditCardNumber": "378282246310005",
-    "creditCardCvv": 123,
-    "creditCardExpirationYear": 2000,
-    "creditCardExpirationMonth": 10
-  }
+ "userId": "56437829",
+ "userCurrency": "PHP",
+ "address": {
+ "streetAddress": "Schillerstrasse 9",
+ "city": "Munich",
+ "state": "Bavaria",
+ "country": "Germany"
+ },
+ "email": "mail@foo",
+ "creditCard": {
+ "creditCardNumber": "378282246310005",
+ "creditCardCvv": 123,
+ "creditCardExpirationYear": 2000,
+ "creditCardExpirationMonth": 10
+ }
  }
  *
  *
@@ -94,7 +95,14 @@ function scalePrice (price, scalar) {
   }
 }
 
-module.exports = lib.serverless.rpcHandler(async (request, ctx) => {
+async function handle (event, ctx) {
+  // Verify JWT token
+  const isValid = await verifyJWT(event)
+
+  if (!isValid) {
+    return { error: 'Unauthorized' }
+  }
+
   const cart = await ctx.call('getcart', {
     userId: request.userId
   })
@@ -171,4 +179,6 @@ module.exports = lib.serverless.rpcHandler(async (request, ctx) => {
     userId: request.userId
   })
   return { order: orderResult }
-})
+}
+
+module.exports = handle
