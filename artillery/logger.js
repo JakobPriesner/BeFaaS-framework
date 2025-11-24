@@ -2,7 +2,6 @@ const lib = require('@befaas/lib')
 const fs = require('fs')
 const path = require('path')
 const { performance } = require('perf_hooks')
-const authConfig = require('./authConfig')
 
 
 const LIB_VERSION = require('@befaas/lib/package.json').version
@@ -41,45 +40,35 @@ function logEvent(event) {
   )
 }
 
-async function beforeRequest(requestParams, context, ee, next) {
+function beforeRequest(requestParams, context, ee, next) {
   const url = resolveVar(requestParams.url, context)
   const contextId = lib.helper.generateRandomID()
   const xPair = `${contextId}-${lib.helper.generateRandomID()}`
-
-  if (!requestParams.headers) {
-    requestParams.headers = {}
-  }
-
+  requestParams.headers = {}
   requestParams.headers['x-context'] = contextId
   requestParams.headers['x-pair'] = xPair
-
-  // Add authentication header if auth is enabled
-  const authCfg = authConfig.getAuthConfig()
-  if (authCfg.enabled && context.vars.userName && context.vars.password) {
-    try {
-      const token = await authConfig.authenticateUser(
-        context.vars.userName,
-        context.vars.password
-      )
-      if (token) {
-        requestParams.headers['Authorization'] = `Bearer ${token}`
-      }
-    } catch (error) {
-      console.error(`Failed to authenticate user ${context.vars.userName}:`, error.message)
-    }
-  }
-
-  logEvent({ url, contextId, xPair, type: 'before', authenticated: !!requestParams.headers['Authorization'] })
+  logEvent({ url, contextId, xPair, type: 'before' })
   return next()
 }
 
 function afterResponse(requestParams, response, context, ee, next) {
-  logEvent({
+  const event = {
     url: requestParams.url,
     contextId: requestParams.headers['x-context'],
     xPair: requestParams.headers['x-pair'],
     type: 'after'
-  })
+  }
+
+  // Add response validation logging when ARTILLERY_VALIDATION_MODE is enabled
+  if (process.env.ARTILLERY_VALIDATION_MODE === 'true') {
+    event.response = {
+      statusCode: response.statusCode,
+      statusMessage: response.statusMessage,
+      bodyPreview: response.body ? response.body.substring(0, 50) : null // First 50 chars
+    }
+  }
+
+  logEvent(event)
 
   return next()
 }

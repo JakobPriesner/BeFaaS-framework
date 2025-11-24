@@ -1,0 +1,111 @@
+@startuml Microservices Architecture
+
+!define RECTANGLE_COLOR #E3F2FD
+!define STORAGE_COLOR #FFE0B2
+
+skinparam component {
+  BackgroundColor RECTANGLE_COLOR
+  BorderColor #1976D2
+  ArrowColor #1976D2
+}
+
+skinparam database {
+  BackgroundColor STORAGE_COLOR
+  BorderColor #F57C00
+}
+
+' External clients
+actor "Client" as client
+
+' Microservices
+package "Microservices" {
+  component "Frontend Service" as frontendService {
+    [frontend]
+  }
+
+  component "Cart Service" as cartService {
+    [getcart]
+    [addcartitem]
+    [emptycart]
+    [cartkvstorage]
+  }
+
+  component "Product Service" as productService {
+    [getproduct]
+    [listproducts]
+    [searchproducts]
+    [listrecommendations]
+  }
+
+  component "Order Service" as orderService {
+    [checkout]
+    [payment]
+    [shipmentquote]
+    [email]
+  }
+
+  component "Content Service" as contentService {
+    [getads]
+    [supportedcurrencies]
+    [currency]
+  }
+}
+
+' Storage
+database "Redis" as redis
+
+' Client to Frontend
+client --> frontendService : HTTP
+
+' Frontend Service calls
+frontend --> supportedcurrencies : call
+frontend --> listproducts : call
+frontend --> getads : call
+frontend --> getproduct : call
+frontend --> listrecommendations : call
+frontend --> getcart : call
+frontend --> emptycart : call
+frontend --> addcartitem : call
+frontend --> shipmentquote : call
+frontend --> checkout : call
+
+' Cart Service internal calls
+getcart --> cartkvstorage : ctx.call
+addcartitem --> cartkvstorage : ctx.call
+emptycart --> cartkvstorage : ctx.call
+
+' Cart Service to Redis
+cartkvstorage --> redis : get/set
+
+' Checkout Service calls (most complex)
+checkout --> getcart : ctx.call
+checkout --> getproduct : ctx.call
+checkout --> currency : ctx.call
+checkout --> shipmentquote : ctx.call
+checkout --> payment : ctx.call
+checkout --> email : ctx.call
+checkout --> emptycart : ctx.call
+
+note right of checkout
+  Checkout orchestrates:
+  1. Get cart items
+  2. Get product details & convert prices
+  3. Get shipment quote
+  4. Process payment
+  5. Ship order
+  6. Send email
+  7. Empty cart
+end note
+
+note right of cartkvstorage
+  All cart data is
+  stored in Redis
+end note
+
+note left of frontendService
+  Frontend is the main
+  entry point that calls
+  multiple services
+end note
+
+@enduml

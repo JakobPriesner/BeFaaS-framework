@@ -100,7 +100,7 @@ echo "Compiling logger.js" | chalk blue
 npx ncc build artillery/logger.js -o artillery/build
 
 echo "Creating docker image..." | chalk blue
-docker build -t befaas/artillery artillery/
+docker build --platform linux/amd64 -t befaas/artillery artillery/
 
 echo "Cleaning up build files" | chalk blue
 rm -rf artillery/build

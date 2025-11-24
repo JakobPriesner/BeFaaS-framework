@@ -1,3 +1,9 @@
+variable "validation_mode" {
+  description = "Enable validation mode to log HTTP response details"
+  type        = string
+  default     = "false"
+}
+
 data "terraform_remote_state" "exp" {
   backend = "local"
 
@@ -67,7 +73,7 @@ resource "aws_instance" "workload" {
       "sudo apt-get update",
       "curl -sSL https://get.docker.com/ | sh",
       "sudo docker load -i /tmp/image.tar.gz",
-      "sudo docker run -it --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} befaas/artillery"
+      "sudo docker run -it --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} -e ARTILLERY_VALIDATION_MODE=${var.validation_mode} befaas/artillery"
     ]
   }
 }

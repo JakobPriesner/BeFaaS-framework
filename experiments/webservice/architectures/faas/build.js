@@ -89,6 +89,10 @@ async function build(tmpDir, authStrategy) {
   // Get all function names from the functions directory
   const functionsDir = path.join(__dirname, '..', '..', 'functions');
   const useCases = fs.readdirSync(functionsDir).filter(file => {
+    // Exclude _build directory and other non-function directories
+    if (file.startsWith('_') || file.startsWith('.')) {
+      return false;
+    }
     const fullPath = path.join(functionsDir, file);
     return fs.statSync(fullPath).isDirectory();
   });

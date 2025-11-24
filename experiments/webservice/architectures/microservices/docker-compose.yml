@@ -1,0 +1,186 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - befaas-network
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  product-service:
+    build:
+      context: ../
+      dockerfile: microservices/product-service/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - PRODUCT_SERVICE_URL=http://product-service:3001
+      - CART_SERVICE_URL=http://cart-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - CONTENT_SERVICE_URL=http://content-service:3004
+      # Authentication configuration
+      - USE_AUTH=false
+      - AUTH_PROVIDER=basic
+      - JWT_SECRET=change-this-in-production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - befaas-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  cart-service:
+    build:
+      context: ../
+      dockerfile: microservices/cart-service/Dockerfile
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - PRODUCT_SERVICE_URL=http://product-service:3001
+      - CART_SERVICE_URL=http://cart-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - CONTENT_SERVICE_URL=http://content-service:3004
+      # Authentication configuration
+      - USE_AUTH=false
+      - AUTH_PROVIDER=basic
+      - JWT_SECRET=change-this-in-production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - befaas-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  order-service:
+    build:
+      context: ../
+      dockerfile: microservices/order-service/Dockerfile
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - PRODUCT_SERVICE_URL=http://product-service:3001
+      - CART_SERVICE_URL=http://cart-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - CONTENT_SERVICE_URL=http://content-service:3004
+      # Authentication configuration
+      - USE_AUTH=false
+      - AUTH_PROVIDER=basic
+      - JWT_SECRET=change-this-in-production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - befaas-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  content-service:
+    build:
+      context: ../
+      dockerfile: microservices/content-service/Dockerfile
+    ports:
+      - "3004:3004"
+    environment:
+      - PORT=3004
+      - PRODUCT_SERVICE_URL=http://product-service:3001
+      - CART_SERVICE_URL=http://cart-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - CONTENT_SERVICE_URL=http://content-service:3004
+      # Authentication configuration
+      - USE_AUTH=false
+      - AUTH_PROVIDER=basic
+      - JWT_SECRET=change-this-in-production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - befaas-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  frontend-service:
+    build:
+      context: ../
+      dockerfile: microservices/frontend-service/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - PRODUCT_SERVICE_URL=http://product-service:3001
+      - CART_SERVICE_URL=http://cart-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - CONTENT_SERVICE_URL=http://content-service:3004
+      # Authentication configuration
+      - USE_AUTH=false
+      - AUTH_PROVIDER=basic
+      - JWT_SECRET=change-this-in-production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - befaas-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      product-service:
+        condition: service_started
+      cart-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+      content-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+networks:
+  befaas-network:
+    driver: bridge
+
+volumes:
+  redis-data:

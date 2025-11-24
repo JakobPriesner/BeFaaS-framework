@@ -64,10 +64,15 @@ resource "aws_api_gateway_deployment" "fn" {
     aws_api_gateway_integration.proxy
   ]
 
+  rest_api_id = data.terraform_remote_state.ep.outputs.aws_api_gateway_rest_api.id
+}
+
+resource "aws_api_gateway_stage" "fn" {
+  deployment_id = aws_api_gateway_deployment.fn.id
+  rest_api_id   = data.terraform_remote_state.ep.outputs.aws_api_gateway_rest_api.id
+  stage_name    = "dev"
+
   variables = {
     deployed_at = timestamp()
   }
-
-  rest_api_id = data.terraform_remote_state.ep.outputs.aws_api_gateway_rest_api.id
-  stage_name  = "dev"
 }
