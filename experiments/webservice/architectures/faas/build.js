@@ -43,6 +43,15 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
     const destPackagePath = path.join(tmpDir, 'package.json');
     fs.copyFileSync(packagePath, destPackagePath);
 
+    // Copy experiment.json
+    const experimentJsonPath = path.join(__dirname, '..', '..', 'experiment.json');
+    const destExperimentJsonPath = path.join(tmpDir, 'experiment.json');
+    if (fs.existsSync(experimentJsonPath)) {
+      fs.copyFileSync(experimentJsonPath, destExperimentJsonPath);
+    } else {
+      console.warn(`  ⚠️  Warning: experiment.json not found at ${experimentJsonPath}`);
+    }
+
     console.log(`Build complete for ${useCase} in ${tmpDir}`);
     return;
   }
@@ -59,9 +68,17 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
   fs.copyFileSync(packagePath, destPackagePath);
 
   // 4. Copy the usecase from the experiments/webservice/functions/<usecase>/index.js to handler.js
+  // Also rewrite require paths for shared modules
   const useCasePath = path.join(useCaseDir, 'index.js');
   const handlerPath = path.join(tmpDir, 'handler.js');
-  fs.copyFileSync(useCasePath, handlerPath);
+
+  let handlerCode = fs.readFileSync(useCasePath, 'utf8');
+
+  // Rewrite require paths from ../../<module> to ./<module>
+  // This is needed because in the Lambda package structure, shared modules are at the same level as handler.js
+  handlerCode = handlerCode.replace(/require\(['"]\.\.\/\.\.\/([^'"]+)['"]\)/g, "require('./$1')");
+
+  fs.writeFileSync(handlerPath, handlerCode, 'utf8');
 
   // 5. Copy the auth strategy from experiments/webservice/authentication/<authStrategy> to tmpDir/auth
   const authDir = path.join(tmpDir, 'auth');
@@ -79,6 +96,51 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
       fs.copyFileSync(srcPath, destPath);
     }
   });
+
+  // 6. Copy shared modules that this function depends on
+  const sharedModuleDeps = {
+    'currency': ['currency/exchangerates.js'],
+    'supportedcurrencies': ['currency/exchangerates.js'],
+    'getproduct': ['productcatalog/products.js'],
+    'listproducts': ['productcatalog/products.js'],
+    'searchproducts': ['productcatalog/products.js']
+  };
+
+  if (sharedModuleDeps[useCase]) {
+    console.log(`  Copying shared modules for ${useCase}...`);
+
+    for (const modulePath of sharedModuleDeps[useCase]) {
+      const parts = modulePath.split('/');
+      const moduleDir = parts[0];
+      const moduleFile = parts[1];
+
+      // Create the module directory in tmpDir (e.g., tmpDir/currency/)
+      const destModuleDir = path.join(tmpDir, moduleDir);
+      if (!fs.existsSync(destModuleDir)) {
+        fs.mkdirSync(destModuleDir, { recursive: true });
+      }
+
+      // Copy the shared module file
+      const srcModulePath = path.join(__dirname, '..', '..', modulePath);
+      const destModulePath = path.join(destModuleDir, moduleFile);
+
+      if (fs.existsSync(srcModulePath)) {
+        fs.copyFileSync(srcModulePath, destModulePath);
+        console.log(`    ✓ Copied ${modulePath}`);
+      } else {
+        console.warn(`    ⚠️  Warning: Shared module not found: ${srcModulePath}`);
+      }
+    }
+  }
+
+  // 7. Copy experiment.json to tmpDir
+  const experimentJsonPath = path.join(__dirname, '..', '..', 'experiment.json');
+  const destExperimentJsonPath = path.join(tmpDir, 'experiment.json');
+  if (fs.existsSync(experimentJsonPath)) {
+    fs.copyFileSync(experimentJsonPath, destExperimentJsonPath);
+  } else {
+    console.warn(`  ⚠️  Warning: experiment.json not found at ${experimentJsonPath}`);
+  }
 
   console.log(`Build complete for ${useCase} in ${tmpDir}`);
 }

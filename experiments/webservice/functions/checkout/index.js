@@ -104,10 +104,10 @@ async function handle (event, ctx) {
   }
 
   const cart = await ctx.call('getcart', {
-    userId: request.userId
+    userId: event.userId
   })
   let totalOrderPrice = {
-    currencyCode: request.userCurrency,
+    currencyCode: event.userCurrency,
     units: 0,
     nanos: 0
   }
@@ -123,7 +123,7 @@ async function handle (event, ctx) {
       const productPrice = await convertPrice(
         ctx,
         product.priceUsd,
-        request.userCurrency
+        event.userCurrency
       )
       cartItems.push({
         item: item,
@@ -138,7 +138,7 @@ async function handle (event, ctx) {
 
   const shipmentPrice = (
     await ctx.call('shipmentquote', {
-      address: request.address,
+      address: event.address,
       items: cart.items
     })
   ).costUsd
@@ -146,12 +146,12 @@ async function handle (event, ctx) {
   const convertedShipmentPrice = await convertPrice(
     ctx,
     shipmentPrice,
-    request.userCurrency
+    event.userCurrency
   )
   totalOrderPrice = await addPrices(totalOrderPrice, convertedShipmentPrice)
 
   const { transactionId } = await ctx.call('payment', {
-    creditCard: request.creditCard,
+    creditCard: event.creditCard,
     amount: totalOrderPrice
   })
 
@@ -159,7 +159,7 @@ async function handle (event, ctx) {
 
   const trackingId = (
     await ctx.call('shiporder', {
-      address: request.address,
+      address: event.address,
       items: cart.items
     })
   ).id
@@ -168,15 +168,15 @@ async function handle (event, ctx) {
     shippingTrackingId: trackingId,
     shippingCost: convertedShipmentPrice,
     totalCost: totalOrderPrice,
-    shippingAddress: request.address,
+    shippingAddress: event.address,
     items: cartItems
   }
   await ctx.call('email', {
-    email: request.email,
+    email: event.email,
     order: orderResult
   })
   await ctx.call('emptycart', {
-    userId: request.userId
+    userId: event.userId
   })
   return { order: orderResult }
 }

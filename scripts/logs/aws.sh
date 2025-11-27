@@ -4,7 +4,7 @@ set -euo pipefail
 
 export AWS_DEFAULT_REGION=$AWS_REGION
 echo "Getting AWS logs" | chalk magenta
-for lg in $(aws logs describe-log-groups --log-group-name-prefix /aws/lambda/${project_name} | jq -r '.logGroups[].logGroupName'); do
+for lg in $(aws logs describe-log-groups --log-group-name-prefix /aws/${BEFAAS_DEPLOYMENT_ID} | jq -r '.logGroups[].logGroupName'); do
   echo "Getting logs for $lg" | chalk magenta
   for ls in $(aws logs describe-log-streams --log-group-name $lg | jq -r '.logStreams[].logStreamName'); do
       echo "|--> $ls" | chalk magenta
@@ -12,7 +12,7 @@ for lg in $(aws logs describe-log-groups --log-group-name-prefix /aws/lambda/${p
   done
 done
 
-for lg in $(aws logs describe-log-groups --log-group-name-prefix /aws/lambda/${project_name} | jq -r '.logGroups[].logGroupName'); do
+for lg in $(aws logs describe-log-groups --log-group-name-prefix /aws/${BEFAAS_DEPLOYMENT_ID} | jq -r '.logGroups[].logGroupName'); do
   echo "Getting logs for log group $lg" | chalk magenta
   for ls in $(aws logs describe-log-streams --log-group-name $lg | jq -r '.logStreams[].logStreamName'); do
       echo "|--> Get Logs for log stream $ls" | chalk magenta

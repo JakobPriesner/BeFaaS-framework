@@ -18,6 +18,7 @@ Required:
 Optional:
   --experiment, -e     Experiment to run (default: webservice)
                        Available: iot, smartFactory, streaming, test, topics, webservice
+  --memory             AWS Lambda memory in MB (default: 512, range: 128-10240)
   --build-only         Only build, don't deploy
   --deploy-only        Only deploy (skip build)
   --destroy            Destroy infrastructure after experiment
@@ -31,6 +32,9 @@ Optional:
 Examples:
   # Full experiment run with FaaS architecture and no auth (webservice)
   node scripts/experiment.js -a faas -u none
+
+  # Run with custom Lambda memory configuration
+  node scripts/experiment.js -a faas -u none --memory 1024
 
   # Run smartFactory experiment with microservices
   node scripts/experiment.js -e smartFactory -a microservices -u service-integrated --skip-benchmark
@@ -58,7 +62,8 @@ function parseArgs(args) {
     skipBenchmark: false,
     skipMetrics: false,
     workload: 'workload-constant.yml',
-    outputDir: null
+    outputDir: null,
+    memory: 512
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -106,6 +111,9 @@ function parseArgs(args) {
       case '--output-dir':
         config.outputDir = args[++i];
         break;
+      case '--memory':
+        config.memory = parseInt(args[++i]);
+        break;
       default:
         console.error(`Unknown argument: ${arg}`);
         printUsage();
@@ -150,6 +158,14 @@ function parseArgs(args) {
   if (!validExperiments.includes(config.experiment)) {
     console.error(`Error: Invalid experiment. Must be one of: ${validExperiments.join(', ')}`);
     process.exit(1);
+  }
+
+  // Validate memory if provided
+  if (config.memory) {
+    if (isNaN(config.memory) || config.memory < 128 || config.memory > 10240) {
+      console.error('Error: Memory must be between 128 MB and 10240 MB');
+      process.exit(1);
+    }
   }
 
   // Set default output directory
@@ -252,6 +268,14 @@ function validateEnvironment(experiment) {
   process.env.TF_CLI_CONFIG_FILE = '/experiments/dev.tfrc';
 
   console.log('✓ Environment validation completed');
+}
+
+function setHardwareConfig(config) {
+  // Set Lambda memory configuration for AWS
+  if (config.memory) {
+    process.env.TF_VAR_memory_size = config.memory.toString();
+    console.log(`✓ Lambda memory configured: ${config.memory} MB`);
+  }
 }
 
 function getProvidersFromConfig(config) {
@@ -437,7 +461,7 @@ async function runBenchmark(experiment, workload, outputDir) {
   });
 }
 
-async function collectMetrics(experiment, outputDir) {
+async function collectMetrics(experiment, outputDir, experimentStartTime) {
   logSection('Collecting Logs and Metrics');
 
   const logsScript = path.join(__dirname, 'logs.sh');
@@ -477,6 +501,18 @@ async function collectMetrics(experiment, outputDir) {
 
     console.log(`Using AWS region: ${awsRegion}`);
 
+    // Prepare environment with experiment start time
+    const logsEnv = {
+      ...process.env,
+      AWS_REGION: awsRegion
+    };
+
+    // Add experiment start time if available
+    if (experimentStartTime) {
+      logsEnv.EXPERIMENT_START_TIME = experimentStartTime.toString();
+      console.log(`Filtering logs from: ${new Date(experimentStartTime).toISOString()}`);
+    }
+
     // Run logs.sh to collect logs from providers (must run from project root)
     await new Promise((resolve, reject) => {
       const { spawn } = require('child_process');
@@ -484,7 +520,7 @@ async function collectMetrics(experiment, outputDir) {
         cwd: projectRoot,
         stdio: ['inherit', 'inherit', 'inherit'],
         shell: '/bin/bash',
-        env: { ...process.env, AWS_REGION: awsRegion }
+        env: logsEnv
       });
 
       child.on('close', (code) => {
@@ -535,7 +571,7 @@ async function collectMetrics(experiment, outputDir) {
   }
 }
 
-function analyzeResults(experiment, outputDir) {
+async function analyzeResults(experiment, outputDir) {
   logSection('Analyzing Results');
 
   console.log(`Analyzing results in ${outputDir}...`);
@@ -546,27 +582,112 @@ function analyzeResults(experiment, outputDir) {
     return;
   }
 
-  // Check if deployment_id.txt exists in logs
-  const deploymentIdFile = path.join(logsDir, 'deployment_id.txt');
-  if (!fs.existsSync(deploymentIdFile)) {
-    console.log('No deployment_id.txt found, skipping analysis');
-    return;
+  const analysisDir = path.join(outputDir, 'analysis');
+  if (!fs.existsSync(analysisDir)) {
+    fs.mkdirSync(analysisDir, { recursive: true });
   }
 
+  const projectRoot = path.join(__dirname, '..');
+  const absoluteLogsDir = path.resolve(logsDir);
+  const absoluteAnalysisDir = path.resolve(analysisDir);
+
   try {
-    const expDir = path.join(__dirname, '..');
-    const containerLogsDir = `/experiments/${outputDir}/logs`;
-    const analysisDir = path.join(expDir, 'analysis');
+    // Step 1: Generate dump.json using befaas/analysis container
+    console.log('\nStep 1: Generating dump.json from logs...');
+    const containerLogsDir = `/experiments/${path.relative(projectRoot, absoluteLogsDir)}`;
+    const containerAnalysisDir = `/experiments/${path.relative(projectRoot, absoluteAnalysisDir)}`;
 
-    console.log('Running analysis Docker container...');
-    console.log(`Using logs from: ${containerLogsDir}`);
-
-    execSync(`docker run -it --rm -v ${expDir}:/experiments befaas/analysis ${containerLogsDir} /experiments/analysis`, {
+    execSync(`docker run --rm -v ${projectRoot}:/experiments befaas/analysis ${containerLogsDir} ${containerAnalysisDir}`, {
       stdio: 'inherit',
       shell: '/bin/bash'
     });
 
-    console.log('✓ Analysis completed');
+    const dumpFile = path.join(analysisDir, 'dump.json');
+    if (!fs.existsSync(dumpFile)) {
+      console.log('⚠️  dump.json not created, skipping further analysis');
+      return;
+    }
+
+    console.log('✓ dump.json generated successfully');
+
+    // Step 2: Generate performance plots
+    console.log('\nStep 2: Generating performance plots...');
+    const generatePlotsScript = path.join(__dirname, 'generate_plots.py');
+
+    if (fs.existsSync(generatePlotsScript)) {
+      try {
+        execSync(`python3 ${generatePlotsScript} ${dumpFile} ${analysisDir}`, {
+          stdio: 'inherit'
+        });
+        console.log('✓ Performance plots generated');
+      } catch (error) {
+        console.error('⚠️  Performance plot generation failed:', error.message);
+      }
+    } else {
+      console.log('⚠️  generate_plots.py not found, skipping performance plots');
+    }
+
+    // Step 3: Validate HTTP responses
+    console.log('\nStep 3: Validating HTTP responses...');
+    const validateScript = path.join(__dirname, 'validate_responses.py');
+    const artilleryLog = path.join(logsDir, 'artillery.log');
+
+    if (fs.existsSync(validateScript) && fs.existsSync(artilleryLog)) {
+      try {
+        execSync(`python3 ${validateScript} ${artilleryLog} ${analysisDir}`, {
+          stdio: 'inherit'
+        });
+        console.log('✓ HTTP response validation completed');
+      } catch (error) {
+        // Exit code 1 or 2 means warnings/errors were found but analysis completed
+        if (error.status === 1 || error.status === 2) {
+          console.log('✓ HTTP response validation completed (with warnings)');
+        } else {
+          console.error('⚠️  HTTP response validation failed:', error.message);
+        }
+      }
+    } else {
+      if (!fs.existsSync(artilleryLog)) {
+        console.log('⚠️  artillery.log not found, skipping HTTP validation');
+      } else {
+        console.log('⚠️  validate_responses.py not found, skipping HTTP validation');
+      }
+    }
+
+    // Step 4: Analyze AWS CloudWatch errors
+    console.log('\nStep 4: Analyzing AWS CloudWatch errors...');
+    const analyzeErrorsScript = path.join(__dirname, 'analyze_errors.py');
+    const awsLog = path.join(logsDir, 'aws.log');
+
+    if (fs.existsSync(analyzeErrorsScript) && fs.existsSync(awsLog)) {
+      try {
+        execSync(`python3 ${analyzeErrorsScript} ${awsLog} ${analysisDir}`, {
+          stdio: 'inherit'
+        });
+        console.log('✓ Error analysis completed');
+      } catch (error) {
+        // Exit code 1 or 2 means errors were found but analysis completed
+        if (error.status === 1 || error.status === 2) {
+          console.log('✓ Error analysis completed (issues found)');
+        } else {
+          console.error('⚠️  Error analysis failed:', error.message);
+        }
+      }
+    } else {
+      if (!fs.existsSync(awsLog)) {
+        console.log('⚠️  aws.log not found, skipping error analysis');
+      } else {
+        console.log('⚠️  analyze_errors.py not found, skipping error analysis');
+      }
+    }
+
+    console.log('\n✓ Analysis completed successfully');
+    console.log(`\nAnalysis results saved to: ${analysisDir}`);
+    console.log('  - dump.json: Raw performance data');
+    console.log('  - *.png: Performance visualizations');
+    console.log('  - validation_report.txt: HTTP response analysis');
+    console.log('  - error_analysis.txt: AWS CloudWatch error analysis');
+
   } catch (error) {
     console.error('✗ Analysis failed:', error.message);
     console.log('Note: Analysis requires Docker and the befaas/analysis image');
@@ -759,15 +880,18 @@ async function main() {
   console.log(`  Experiment: ${config.experiment}`);
   console.log(`  Architecture: ${config.architecture}`);
   console.log(`  Auth Strategy: ${config.auth}`);
+  console.log(`  Lambda Memory: ${config.memory} MB`);
   console.log(`  Workload: ${config.workload}`);
   console.log(`  Output Directory: ${config.outputDir}`);
   console.log(`  Log File: ${logFile}`);
 
   let buildDir = null;
+  let experimentStartTime = null;
 
   try {
-    // Step 0: Validate environment and install Terraform providers
+    // Step 0: Validate environment, set hardware config, and install Terraform providers
     validateEnvironment(config.experiment);
+    setHardwareConfig(config);
     installTerraformProviders();
 
     // Step 1: Cleanup and destroy existing infrastructure
@@ -803,6 +927,15 @@ async function main() {
         buildDir = path.join(__dirname, '..', 'experiments', config.experiment, 'architectures', config.architecture, '_build');
       }
 
+      // Record experiment start time (in milliseconds for AWS CloudWatch)
+      // Subtract 1 minute buffer to ensure we capture initialization logs
+      experimentStartTime = Date.now() - 60000;
+
+      // Write timestamp to file for reference
+      const timestampFile = path.join(config.outputDir, 'experiment_start_time.txt');
+      fs.writeFileSync(timestampFile, `${experimentStartTime}\n${new Date(experimentStartTime).toISOString()}`);
+      console.log(`Experiment start time recorded: ${new Date(experimentStartTime).toISOString()}`);
+
       endpoints = await runDeploy(config.experiment, config.architecture, buildDir);
 
       // Wait for deployment to stabilize
@@ -823,12 +956,12 @@ async function main() {
 
     // Step 4: Collect Metrics
     if (!config.buildOnly && !config.skipMetrics) {
-      await collectMetrics(config.experiment, config.outputDir);
+      await collectMetrics(config.experiment, config.outputDir, experimentStartTime);
     }
 
     // Step 5: Analyze Results
     if (!config.buildOnly && !config.skipBenchmark) {
-      analyzeResults(config.experiment, config.outputDir);
+      await analyzeResults(config.experiment, config.outputDir);
     }
 
     // Step 6: Destroy infrastructure if requested

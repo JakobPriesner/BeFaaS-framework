@@ -176,7 +176,7 @@ resource "aws_security_group" "ecs_tasks" {
 resource "aws_cloudwatch_log_group" "microservices" {
   for_each = local.services
 
-  name              = "/ecs/${var.deployment_id}/${each.key}"
+  name              = "/aws/${var.deployment_id}/${each.key}"
   retention_in_days = 7
 
   tags = {
