@@ -50,7 +50,7 @@ function validateEmail (email) {
  */
 async function handle (event, ctx) {
   // Taken from the Chromium project:
-  const ok = validateEmail(request.email)
+  const ok = validateEmail(event.email)
   return ok ? {} : { error: 'email is invalid' }
 }
 

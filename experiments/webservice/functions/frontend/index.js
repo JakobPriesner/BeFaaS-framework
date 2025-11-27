@@ -3,6 +3,15 @@ const lib = require('@befaas/lib')
 const _ = require('lodash')
 const fs = require('fs')
 const path = require('path')
+const { CognitoIdentityProviderClient, InitiateAuthCommand, SignUpCommand } = require('@aws-sdk/client-cognito-identity-provider')
+
+// Initialize Cognito client
+const cognitoClient = new CognitoIdentityProviderClient({
+  region: process.env.AWS_REGION || 'us-east-1'
+})
+
+const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID
+const COGNITO_USER_POOL_ID = process.env.COGNITO_USER_POOL_ID
 
 let storageObj = {}
 
@@ -102,9 +111,119 @@ function printPrice (price) {
   )
 }
 
+// Authenticate with Cognito and get JWT tokens
+async function authenticateWithCognito(username, password) {
+  try {
+    const crypto = require('crypto')
+
+    // Create secret hash for Cognito authentication
+    const secretHash = crypto
+      .createHmac('SHA256', process.env.COGNITO_CLIENT_SECRET || '')
+      .update(username + COGNITO_CLIENT_ID)
+      .digest('base64')
+
+    const command = new InitiateAuthCommand({
+      AuthFlow: 'USER_PASSWORD_AUTH',
+      ClientId: COGNITO_CLIENT_ID,
+      AuthParameters: {
+        USERNAME: username,
+        PASSWORD: password,
+        SECRET_HASH: secretHash
+      }
+    })
+
+    const response = await cognitoClient.send(command)
+
+    return {
+      success: true,
+      accessToken: response.AuthenticationResult.AccessToken,
+      idToken: response.AuthenticationResult.IdToken,
+      refreshToken: response.AuthenticationResult.RefreshToken
+    }
+  } catch (error) {
+    console.error('Cognito authentication error:', error.message)
+
+    // If user doesn't exist, try to create them
+    if (error.name === 'UserNotFoundException' || error.name === 'NotAuthorizedException') {
+      try {
+        // For demo purposes, auto-create users who don't exist
+        const crypto = require('crypto')
+        const secretHash = crypto
+          .createHmac('SHA256', process.env.COGNITO_CLIENT_SECRET || '')
+          .update(username + COGNITO_CLIENT_ID)
+          .digest('base64')
+
+        const signUpCommand = new SignUpCommand({
+          ClientId: COGNITO_CLIENT_ID,
+          Username: username,
+          Password: password,
+          SecretHash: secretHash,
+          UserAttributes: [
+            {
+              Name: 'email',
+              Value: `${username}@example.com`
+            }
+          ]
+        })
+
+        await cognitoClient.send(signUpCommand)
+
+        // Try authenticating again
+        const command = new InitiateAuthCommand({
+          AuthFlow: 'USER_PASSWORD_AUTH',
+          ClientId: COGNITO_CLIENT_ID,
+          AuthParameters: {
+            USERNAME: username,
+            PASSWORD: password,
+            SECRET_HASH: secretHash
+          }
+        })
+
+        const response = await cognitoClient.send(command)
+
+        return {
+          success: true,
+          accessToken: response.AuthenticationResult.AccessToken,
+          idToken: response.AuthenticationResult.IdToken,
+          refreshToken: response.AuthenticationResult.RefreshToken
+        }
+      } catch (signUpError) {
+        console.error('Cognito sign up error:', signUpError.message)
+        return { success: false, error: signUpError.message }
+      }
+    }
+
+    return { success: false, error: error.message }
+  }
+}
+
+// Get JWT token from storage
+function getJWTToken(ctx) {
+  return storageObj.jwtToken || ''
+}
+
 module.exports = lib.serverless.router(async router => {
-  router.get('/', async (ctx, next) => {
+  // Middleware to set JWT token for all requests
+  router.use(async (ctx, next) => {
     getCookies(ctx)
+    const jwtToken = getJWTToken(ctx)
+    if (jwtToken) {
+      // Set authHeader on ctx.lib so all function calls include it
+      ctx.lib.authHeader = `Bearer ${jwtToken}`
+
+      // Override ctx.lib.call to always pass the auth header
+      const originalCall = ctx.lib.call.bind(ctx.lib)
+      ctx.lib.call = async (fn, payload) => {
+        const enrichedPayload = ctx.lib.authHeader
+          ? { ...payload, _authHeader: ctx.lib.authHeader }
+          : payload
+        return await originalCall(fn, enrichedPayload)
+      }
+    }
+    await next()
+  })
+
+  router.get('/', async (ctx, next) => {
     const requestId = lib.helper.generateRandomID()
     const [supportedCurrencies, productList, cats] = await Promise.all([
       ctx.lib.call('supportedcurrencies', {}),
@@ -137,7 +256,6 @@ module.exports = lib.serverless.router(async router => {
   // TODO make recommendations more meaningful? --> use categories?
   // Yes, IDs are required to be word shaped here
   router.get('/product/:productId', async (ctx, next) => {
-    getCookies(ctx)
     const productId = ctx.params.productId
 
     const requestId = lib.helper.generateRandomID()
@@ -299,10 +417,25 @@ module.exports = lib.serverless.router(async router => {
     const userName = ctx.request.body.userName
     const password = ctx.request.body.password
 
-    // Store both username and password in session (plaintext is fine for testing)
-    emptyCartSize(ctx)
-    storageObj.userName = userName
-    storageObj.userPassword = password || ''
+    // Authenticate with Cognito to get JWT token
+    const authResult = await authenticateWithCognito(userName, password)
+
+    if (authResult.success) {
+      // Store username and JWT token in session
+      emptyCartSize(ctx)
+      storageObj.userName = userName
+      storageObj.userPassword = password || ''
+      storageObj.jwtToken = authResult.accessToken
+
+      console.log(`User ${userName} authenticated successfully with Cognito`)
+    } else {
+      console.error(`Failed to authenticate user ${userName}: ${authResult.error}`)
+      // Store without token - will result in 403 errors for protected endpoints
+      emptyCartSize(ctx)
+      storageObj.userName = userName
+      storageObj.userPassword = password || ''
+      storageObj.jwtToken = ''
+    }
 
     ctx.type = 'application/json'
     ctx.response.redirect('back')
@@ -314,6 +447,7 @@ module.exports = lib.serverless.router(async router => {
     emptyCartSize(ctx)
     storageObj.userName = ''
     storageObj.userPassword = ''
+    storageObj.jwtToken = ''
     ctx.type = 'application/json'
     ctx.response.redirect('back')
     storeCookies(ctx)
@@ -323,6 +457,7 @@ module.exports = lib.serverless.router(async router => {
     getCookies(ctx)
     storageObj.userName = ''
     storageObj.userPassword = ''
+    storageObj.jwtToken = ''
     emptyCartSize(ctx)
     ctx.type = 'application/json'
     ctx.response.redirect('./')

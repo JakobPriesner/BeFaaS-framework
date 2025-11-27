@@ -44,7 +44,7 @@ async function handle(event, ctx) {
   }
 
   const ok = valid.number(
-    sanitizeCreditCard(request.creditCard.creditCardNumber)
+    sanitizeCreditCard(event.creditCard.creditCardNumber)
   ).isPotentiallyValid
   return ok
     ? { transactionId: getTransactionId() }
