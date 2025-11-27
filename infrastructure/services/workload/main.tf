@@ -73,7 +73,7 @@ resource "aws_instance" "workload" {
       "sudo apt-get update",
       "curl -sSL https://get.docker.com/ | sh",
       "sudo docker load -i /tmp/image.tar.gz",
-      "sudo docker run -it --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} -e ARTILLERY_VALIDATION_MODE=${var.validation_mode} befaas/artillery"
+      "sudo docker run --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} -e ARTILLERY_VALIDATION_MODE=${var.validation_mode} befaas/artillery"
     ]
   }
 }

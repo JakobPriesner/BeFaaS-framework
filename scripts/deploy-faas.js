@@ -113,7 +113,8 @@ async function deployFaaS(experiment, buildDir) {
         for (const [key, value] of Object.entries(providerOutput)) {
           if (key.includes('endpoint') || key.includes('url')) {
             const endpoint = value.value || value;
-            if (endpoint) {
+            // Only add valid HTTP/HTTPS URLs for health checking
+            if (endpoint && (endpoint.startsWith('http://') || endpoint.startsWith('https://'))) {
               endpoints.push(endpoint);
             }
           }

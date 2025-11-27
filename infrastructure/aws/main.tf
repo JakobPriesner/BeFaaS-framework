@@ -67,12 +67,19 @@ resource "aws_iam_role_policy_attachment" "lambda_exec" {
   policy_arn = aws_iam_policy.policy.arn
 }
 
+resource "aws_cloudwatch_log_group" "lambda_logs" {
+  for_each          = local.fns
+  name              = "/aws/${local.deployment_id}/${each.key}"
+  retention_in_days = 7
+}
+
 resource "aws_lambda_function" "fn" {
   for_each      = local.fns
   function_name = "${local.project_name}-${each.key}"
 
-  s3_bucket = aws_s3_bucket_object.source[each.key].bucket
-  s3_key    = aws_s3_bucket_object.source[each.key].key
+  s3_bucket        = aws_s3_bucket_object.source[each.key].bucket
+  s3_key           = aws_s3_bucket_object.source[each.key].key
+  source_code_hash = filebase64sha256(each.value)
 
   handler     = var.handler
   runtime     = "nodejs18.x"
