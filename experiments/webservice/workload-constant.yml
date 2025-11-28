@@ -27,6 +27,31 @@ scenarios:
           afterResponse: 'afterResponse'
     name: 'just frontend'
     weight: 1
+  # Register a new user, browse products
+  - flow:
+      - get:
+          url: '{{ frontend }}/'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - post:
+          url: '{{ frontend }}/register'
+          name: 'register'
+          followRedirect: false
+          form:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - get:
+          url: '{{ frontend }}/'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - get:
+          url: '{{ frontend }}/product/{{product}}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+    name: 'register and browse'
+    weight: 1
   # Call frontend and browse two products
   - flow:
       - get:
@@ -49,6 +74,7 @@ scenarios:
           url: '{{ frontend }}/'
       - post:
           url: '{{ frontend }}/setUser'
+          name: 'login'
           followRedirect: false
           form:
             userName: '{{ userName }}'
@@ -78,6 +104,7 @@ scenarios:
           afterResponse: 'afterResponse'
       - post:
           url: '{{ frontend }}/setUser'
+          name: 'login'
           followRedirect: true
           form:
             userName: '{{ userName }}'
