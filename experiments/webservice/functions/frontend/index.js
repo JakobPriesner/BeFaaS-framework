@@ -198,32 +198,34 @@ async function authenticateWithCognito(username, password) {
 }
 
 // Get JWT token from storage
-function getJWTToken(ctx) {
+function getJWTToken() {
   return storageObj.jwtToken || ''
 }
 
-module.exports = lib.serverless.router(async router => {
-  // Middleware to set JWT token for all requests
-  router.use(async (ctx, next) => {
-    getCookies(ctx)
-    const jwtToken = getJWTToken(ctx)
-    if (jwtToken) {
-      // Set authHeader on ctx.lib so all function calls include it
-      ctx.lib.authHeader = `Bearer ${jwtToken}`
+// Middleware function to set up JWT token for requests
+// Called at the start of each route handler instead of using router.use()
+// because @befaas/lib's serverless router doesn't support the use() method
+function setupAuth(ctx) {
+  getCookies(ctx)
+  const jwtToken = getJWTToken()
+  if (jwtToken) {
+    // Set authHeader on ctx.lib so all function calls include it
+    ctx.lib.authHeader = `Bearer ${jwtToken}`
 
-      // Override ctx.lib.call to always pass the auth header
-      const originalCall = ctx.lib.call.bind(ctx.lib)
-      ctx.lib.call = async (fn, payload) => {
-        const enrichedPayload = ctx.lib.authHeader
-          ? { ...payload, _authHeader: ctx.lib.authHeader }
-          : payload
-        return await originalCall(fn, enrichedPayload)
-      }
+    // Override ctx.lib.call to always pass the auth header
+    const originalCall = ctx.lib.call.bind(ctx.lib)
+    ctx.lib.call = async (fn, payload) => {
+      const enrichedPayload = ctx.lib.authHeader
+        ? { ...payload, _authHeader: ctx.lib.authHeader }
+        : payload
+      return await originalCall(fn, enrichedPayload)
     }
-    await next()
-  })
+  }
+}
 
+module.exports = lib.serverless.router(router => {
   router.get('/', async (ctx, next) => {
+    setupAuth(ctx)
     const requestId = lib.helper.generateRandomID()
     const [supportedCurrencies, productList, cats] = await Promise.all([
       ctx.lib.call('supportedcurrencies', {}),
@@ -256,6 +258,7 @@ module.exports = lib.serverless.router(async router => {
   // TODO make recommendations more meaningful? --> use categories?
   // Yes, IDs are required to be word shaped here
   router.get('/product/:productId', async (ctx, next) => {
+    setupAuth(ctx)
     const productId = ctx.params.productId
 
     const requestId = lib.helper.generateRandomID()
@@ -299,7 +302,7 @@ module.exports = lib.serverless.router(async router => {
   })
 
   router.get('/cart', async (ctx, next) => {
-    getCookies(ctx)
+    setupAuth(ctx)
     const requestId = lib.helper.generateRandomID()
 
     const cart =
@@ -363,7 +366,7 @@ module.exports = lib.serverless.router(async router => {
   })
 
   router.post('/checkout', async (ctx, next) => {
-    getCookies(ctx)
+    setupAuth(ctx)
     emptyCartSize(ctx)
     const requestId = lib.helper.generateRandomID()
 
@@ -417,8 +420,8 @@ module.exports = lib.serverless.router(async router => {
     const userName = ctx.request.body.userName
     const password = ctx.request.body.password
 
-    // Authenticate with Cognito to get JWT token
-    const authResult = await authenticateWithCognito(userName, password)
+    // Call backend login function
+    const authResult = await ctx.lib.call('login', { userName, password })
 
     if (authResult.success) {
       // Store username and JWT token in session
@@ -427,7 +430,7 @@ module.exports = lib.serverless.router(async router => {
       storageObj.userPassword = password || ''
       storageObj.jwtToken = authResult.accessToken
 
-      console.log(`User ${userName} authenticated successfully with Cognito`)
+      console.log(`User ${userName} authenticated successfully`)
     } else {
       console.error(`Failed to authenticate user ${userName}: ${authResult.error}`)
       // Store without token - will result in 403 errors for protected endpoints
@@ -435,6 +438,39 @@ module.exports = lib.serverless.router(async router => {
       storageObj.userName = userName
       storageObj.userPassword = password || ''
       storageObj.jwtToken = ''
+    }
+
+    ctx.type = 'application/json'
+    ctx.response.redirect('back')
+    storeCookies(ctx)
+  })
+
+  router.post('/register', async (ctx, next) => {
+    getCookies(ctx)
+    const userName = ctx.request.body.userName
+    const password = ctx.request.body.password
+
+    // Call backend register function
+    const registerResult = await ctx.lib.call('register', { userName, password })
+
+    if (registerResult.success) {
+      // After successful registration, log the user in
+      const authResult = await ctx.lib.call('login', { userName, password })
+
+      if (authResult.success) {
+        emptyCartSize(ctx)
+        storageObj.userName = userName
+        storageObj.userPassword = password || ''
+        storageObj.jwtToken = authResult.accessToken
+
+        console.log(`User ${userName} registered and logged in successfully`)
+      } else {
+        console.error(`User ${userName} registered but login failed: ${authResult.error}`)
+        storageObj.userName = ''
+        storageObj.jwtToken = ''
+      }
+    } else {
+      console.error(`Failed to register user ${userName}: ${registerResult.error}`)
     }
 
     ctx.type = 'application/json'
@@ -473,7 +509,7 @@ module.exports = lib.serverless.router(async router => {
   })
 
   router.post('/emptyCart', async (ctx, next) => {
-    getCookies(ctx)
+    setupAuth(ctx)
     const userId = getUserName(ctx)
     await ctx.lib.call('emptycart', { userId: userId })
     emptyCartSize(ctx)
@@ -483,7 +519,7 @@ module.exports = lib.serverless.router(async router => {
   })
 
   router.post('/addCartItem', async (ctx, next) => {
-    getCookies(ctx)
+    setupAuth(ctx)
     const userName = getUserName(ctx)
     const productId = ctx.request.body.productId
     const quantity = _.parseInt(ctx.request.body.quantity)
