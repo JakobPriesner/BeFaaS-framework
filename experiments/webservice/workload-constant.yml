@@ -68,10 +68,22 @@ scenarios:
           afterResponse: 'afterResponse'
     name: 'frontend with browsing around'
     weight: 1
-  # frontend, login, and browing two products
+  # frontend, register (if needed), login, and browsing two products
   - flow:
       - get:
           url: '{{ frontend }}/'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      # Register first (will succeed or return "user exists" which is fine)
+      - post:
+          url: '{{ frontend }}/register'
+          name: 'register'
+          followRedirect: false
+          form:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
       - post:
           url: '{{ frontend }}/setUser'
           name: 'login'
@@ -96,16 +108,26 @@ scenarios:
 
     weight: 1
     name: 'frontend with logging in, not buying anything'
-  # frontend, login, browse two products, buy one
+  # frontend, register (if needed), login, browse two products, buy one
   - flow:
       - get:
           url: '{{ frontend }}/'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
+      # Register first (will succeed or return "user exists" which is fine)
+      - post:
+          url: '{{ frontend }}/register'
+          name: 'register'
+          followRedirect: false
+          form:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
       - post:
           url: '{{ frontend }}/setUser'
           name: 'login'
-          followRedirect: true
+          followRedirect: false
           form:
             userName: '{{ userName }}'
             password: '{{ password }}'
@@ -125,7 +147,7 @@ scenarios:
           afterResponse: 'afterResponse'
       - post:
           url: '{{ frontend }}/addCartItem'
-          followRedirect: true
+          followRedirect: false
           form:
             productId: '{{ product }}'
             quantity: 1
@@ -141,7 +163,7 @@ scenarios:
           afterResponse: 'afterResponse'
       - post:
           url: '{{ frontend }}/checkout'
-          followRedirect: true
+          followRedirect: false
           form:
             email: 'blubb@blubbmail.com'
             street_address: 'awesome street'

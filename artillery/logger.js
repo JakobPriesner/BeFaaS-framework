@@ -44,7 +44,8 @@ function beforeRequest(requestParams, context, ee, next) {
   const url = resolveVar(requestParams.url, context)
   const contextId = lib.helper.generateRandomID()
   const xPair = `${contextId}-${lib.helper.generateRandomID()}`
-  requestParams.headers = {}
+  // Preserve existing headers (including cookies) instead of resetting them
+  requestParams.headers = requestParams.headers || {}
   requestParams.headers['x-context'] = contextId
   requestParams.headers['x-pair'] = xPair
   logEvent({ url, contextId, xPair, type: 'before' })

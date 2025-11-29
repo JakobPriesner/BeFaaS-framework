@@ -2,11 +2,8 @@
 resource "aws_cognito_user_pool" "main" {
   name = "${local.project_name}-user-pool"
 
-  # Allow users to sign in with email
-  username_attributes = ["email"]
-
-  # Auto-verify email
-  auto_verified_attributes = ["email"]
+  # Allow users to sign in with username (not email)
+  # No email verification required - users are auto-confirmed on signup
 
   # Password policy
   password_policy {
@@ -16,27 +13,6 @@ resource "aws_cognito_user_pool" "main" {
     require_numbers                  = true
     require_symbols                  = false
     temporary_password_validity_days = 7
-  }
-
-  # Account recovery
-  account_recovery_setting {
-    recovery_mechanism {
-      name     = "verified_email"
-      priority = 1
-    }
-  }
-
-  # Schema
-  schema {
-    name                = "email"
-    attribute_data_type = "String"
-    mutable             = false
-    required            = true
-
-    string_attribute_constraints {
-      min_length = 1
-      max_length = 256
-    }
   }
 
   tags = {

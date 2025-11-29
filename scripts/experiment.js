@@ -4,6 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+// S3 bucket configuration for results upload
+const S3_BUCKET_NAME = 'jakobs-benchmark-results';
+const S3_REGION = 'us-east-1';
+
 // Parse command line arguments
 const args = process.argv.slice(2);
 
@@ -375,6 +379,61 @@ async function runDeploy(experiment, architecture, buildDir) {
   } catch (error) {
     console.error('✗ Deployment failed:', error.message);
     throw error;
+  }
+}
+
+async function resetCognitoUserPool() {
+  logSection('Resetting Cognito User Pool');
+
+  const projectRoot = path.join(__dirname, '..');
+  const awsDir = path.join(projectRoot, 'infrastructure', 'aws');
+
+  // Check if Cognito resources exist in state
+  try {
+    const stateList = execSync('terraform state list', {
+      cwd: awsDir,
+      encoding: 'utf8'
+    });
+
+    const cognitoResources = [
+      'aws_cognito_user_pool.main',
+      'aws_cognito_user_pool_client.main',
+      'aws_cognito_user_pool_domain.main'
+    ];
+
+    const existingResources = cognitoResources.filter(r => stateList.includes(r));
+
+    if (existingResources.length === 0) {
+      console.log('No Cognito resources found in state, skipping reset');
+      return;
+    }
+
+    // Taint Cognito resources to force recreation
+    console.log('Tainting Cognito resources for recreation...');
+    for (const resource of existingResources) {
+      try {
+        execSync(`terraform taint ${resource}`, {
+          cwd: awsDir,
+          stdio: 'pipe'
+        });
+        console.log(`  ✓ Tainted: ${resource}`);
+      } catch (error) {
+        console.log(`  ⚠ Could not taint ${resource}: ${error.message}`);
+      }
+    }
+
+    // Apply to recreate the tainted resources
+    console.log('\nRecreating Cognito resources...');
+    execSync('terraform apply -auto-approve', {
+      cwd: awsDir,
+      stdio: 'inherit'
+    });
+
+    console.log('✓ Cognito User Pool reset successfully');
+
+  } catch (error) {
+    console.error('⚠ Failed to reset Cognito User Pool:', error.message);
+    console.log('Continuing with existing Cognito configuration...');
   }
 }
 
@@ -809,6 +868,53 @@ async function runDestroy(experiment, architecture) {
   }
 }
 
+async function uploadResultsToS3(outputDir, experiment, architecture, auth) {
+  logSection('Uploading Results to S3');
+
+  const absoluteOutputDir = path.resolve(outputDir);
+  const dirName = path.basename(absoluteOutputDir);
+  const s3Key = `${experiment}/${dirName}`;
+
+  console.log(`Uploading results from: ${absoluteOutputDir}`);
+  console.log(`S3 destination: s3://${S3_BUCKET_NAME}/${s3Key}/`);
+
+  try {
+    // Use AWS CLI to sync the results directory to S3
+    const syncCommand = `aws s3 sync "${absoluteOutputDir}" "s3://${S3_BUCKET_NAME}/${s3Key}/" --region ${S3_REGION}`;
+
+    execSync(syncCommand, {
+      stdio: 'inherit',
+      shell: '/bin/bash'
+    });
+
+    console.log(`✓ Results uploaded to s3://${S3_BUCKET_NAME}/${s3Key}/`);
+    return true;
+  } catch (error) {
+    console.error('✗ Failed to upload results to S3:', error.message);
+    console.log('Note: Ensure AWS CLI is configured and has permissions to write to the S3 bucket');
+    return false;
+  }
+}
+
+function deleteLocalResults(outputDir) {
+  logSection('Deleting Local Results');
+
+  const absoluteOutputDir = path.resolve(outputDir);
+
+  console.log(`Deleting local results from: ${absoluteOutputDir}`);
+
+  try {
+    if (fs.existsSync(absoluteOutputDir)) {
+      fs.rmSync(absoluteOutputDir, { recursive: true, force: true });
+      console.log('✓ Local results deleted successfully');
+    } else {
+      console.log('⚠ Output directory does not exist, nothing to delete');
+    }
+  } catch (error) {
+    console.error('✗ Failed to delete local results:', error.message);
+  }
+}
+
 function cleanupBuildArtifacts(experiment, architecture) {
   logSection('Cleaning up build artifacts');
 
@@ -949,7 +1055,12 @@ async function main() {
       }
     }
 
-    // Step 3: Run Benchmark
+    // Step 3: Reset Cognito User Pool (ensure clean state for benchmark)
+    if (!config.buildOnly && !config.skipBenchmark) {
+      await resetCognitoUserPool();
+    }
+
+    // Step 4: Run Benchmark
     if (!config.buildOnly && !config.skipBenchmark) {
       await runBenchmark(config.experiment, config.workload, config.outputDir);
     }
@@ -970,8 +1081,25 @@ async function main() {
       cleanupBuildArtifacts(config.experiment, config.architecture);
     }
 
+    // Step 7: Upload results to S3
+    if (!config.buildOnly) {
+      const uploadSuccess = await uploadResultsToS3(
+        config.outputDir,
+        config.experiment,
+        config.architecture,
+        config.auth
+      );
+
+      // Step 8: Delete local results after successful upload
+      // TODO: Uncomment the following lines when ready to enable local file deletion
+      // if (uploadSuccess) {
+      //   deleteLocalResults(config.outputDir);
+      // }
+    }
+
     logSection('Experiment Complete');
     console.log(`Results saved to: ${config.outputDir}`);
+    console.log(`Results uploaded to: s3://${S3_BUCKET_NAME}/${config.experiment}/`);
     if (config.destroy) {
       console.log('Infrastructure has been destroyed and cleaned up');
     }

@@ -3,7 +3,7 @@ const lib = require('@befaas/lib')
 const _ = require('lodash')
 const fs = require('fs')
 const path = require('path')
-const { CognitoIdentityProviderClient, InitiateAuthCommand, SignUpCommand } = require('@aws-sdk/client-cognito-identity-provider')
+const { CognitoIdentityProviderClient, InitiateAuthCommand, SignUpCommand, AdminConfirmSignUpCommand } = require('@aws-sdk/client-cognito-identity-provider')
 
 // Initialize Cognito client
 const cognitoClient = new CognitoIdentityProviderClient({
@@ -114,22 +114,25 @@ function printPrice (price) {
 // Authenticate with Cognito and get JWT tokens
 async function authenticateWithCognito(username, password) {
   try {
-    const crypto = require('crypto')
+    const authParameters = {
+      USERNAME: username,
+      PASSWORD: password
+    }
 
-    // Create secret hash for Cognito authentication
-    const secretHash = crypto
-      .createHmac('SHA256', process.env.COGNITO_CLIENT_SECRET || '')
-      .update(username + COGNITO_CLIENT_ID)
-      .digest('base64')
+    // Only include SECRET_HASH if client secret is configured
+    if (process.env.COGNITO_CLIENT_SECRET) {
+      const crypto = require('crypto')
+      const secretHash = crypto
+        .createHmac('SHA256', process.env.COGNITO_CLIENT_SECRET)
+        .update(username + COGNITO_CLIENT_ID)
+        .digest('base64')
+      authParameters.SECRET_HASH = secretHash
+    }
 
     const command = new InitiateAuthCommand({
       AuthFlow: 'USER_PASSWORD_AUTH',
       ClientId: COGNITO_CLIENT_ID,
-      AuthParameters: {
-        USERNAME: username,
-        PASSWORD: password,
-        SECRET_HASH: secretHash
-      }
+      AuthParameters: authParameters
     })
 
     const response = await cognitoClient.send(command)
@@ -147,36 +150,51 @@ async function authenticateWithCognito(username, password) {
     if (error.name === 'UserNotFoundException' || error.name === 'NotAuthorizedException') {
       try {
         // For demo purposes, auto-create users who don't exist
-        const crypto = require('crypto')
-        const secretHash = crypto
-          .createHmac('SHA256', process.env.COGNITO_CLIENT_SECRET || '')
-          .update(username + COGNITO_CLIENT_ID)
-          .digest('base64')
-
-        const signUpCommand = new SignUpCommand({
+        const signUpParams = {
           ClientId: COGNITO_CLIENT_ID,
           Username: username,
-          Password: password,
-          SecretHash: secretHash,
-          UserAttributes: [
-            {
-              Name: 'email',
-              Value: `${username}@example.com`
-            }
-          ]
-        })
+          Password: password
+        }
 
+        // Only include SecretHash if client secret is configured
+        if (process.env.COGNITO_CLIENT_SECRET) {
+          const crypto = require('crypto')
+          const secretHash = crypto
+            .createHmac('SHA256', process.env.COGNITO_CLIENT_SECRET)
+            .update(username + COGNITO_CLIENT_ID)
+            .digest('base64')
+          signUpParams.SecretHash = secretHash
+        }
+
+        const signUpCommand = new SignUpCommand(signUpParams)
         await cognitoClient.send(signUpCommand)
 
+        // Auto-confirm the user so they can authenticate immediately
+        const confirmCommand = new AdminConfirmSignUpCommand({
+          UserPoolId: COGNITO_USER_POOL_ID,
+          Username: username
+        })
+        await cognitoClient.send(confirmCommand)
+
         // Try authenticating again
+        const retryAuthParams = {
+          USERNAME: username,
+          PASSWORD: password
+        }
+
+        if (process.env.COGNITO_CLIENT_SECRET) {
+          const crypto = require('crypto')
+          const secretHash = crypto
+            .createHmac('SHA256', process.env.COGNITO_CLIENT_SECRET)
+            .update(username + COGNITO_CLIENT_ID)
+            .digest('base64')
+          retryAuthParams.SECRET_HASH = secretHash
+        }
+
         const command = new InitiateAuthCommand({
           AuthFlow: 'USER_PASSWORD_AUTH',
           ClientId: COGNITO_CLIENT_ID,
-          AuthParameters: {
-            USERNAME: username,
-            PASSWORD: password,
-            SECRET_HASH: secretHash
-          }
+          AuthParameters: retryAuthParams
         })
 
         const response = await cognitoClient.send(command)

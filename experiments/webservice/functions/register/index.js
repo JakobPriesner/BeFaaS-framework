@@ -38,13 +38,7 @@ async function handle(event, ctx) {
     const signUpParams = {
       ClientId: COGNITO_CLIENT_ID,
       Username: userName,
-      Password: password,
-      UserAttributes: [
-        {
-          Name: 'email',
-          Value: `${userName}@example.com`
-        }
-      ]
+      Password: password
     }
 
     // Only include SecretHash if client secret is configured
