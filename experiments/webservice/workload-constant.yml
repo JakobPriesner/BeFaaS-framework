@@ -26,32 +26,7 @@ scenarios:
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
     name: 'just frontend'
-    weight: 1
-  # Register a new user, browse products
-  - flow:
-      - get:
-          url: '{{ frontend }}/'
-          beforeRequest: 'beforeRequest'
-          afterResponse: 'afterResponse'
-      - post:
-          url: '{{ frontend }}/register'
-          name: 'register'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
-          beforeRequest: 'beforeRequest'
-          afterResponse: 'afterResponse'
-      - get:
-          url: '{{ frontend }}/'
-          beforeRequest: 'beforeRequest'
-          afterResponse: 'afterResponse'
-      - get:
-          url: '{{ frontend }}/product/{{product}}'
-          beforeRequest: 'beforeRequest'
-          afterResponse: 'afterResponse'
-    name: 'register and browse'
-    weight: 1
+    weight: 5
   # Call frontend and browse two products
   - flow:
       - get:
@@ -67,23 +42,26 @@ scenarios:
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
     name: 'frontend with browsing around'
-    weight: 1
+    weight: 4
   # frontend, register (if needed), login, and browsing two products
   - flow:
       - get:
           url: '{{ frontend }}/'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
-      # Register first (will succeed or return "user exists" which is fine)
+      # Check if user needs registration
+      - function: 'setNeedsRegistration'
+      # Register only if not already registered
       - post:
           url: '{{ frontend }}/register'
           name: 'register'
+          ifTrue: 'needsRegistration'
           followRedirect: false
           form:
             userName: '{{ userName }}'
             password: '{{ password }}'
-          beforeRequest: 'beforeRequest'
-          afterResponse: 'afterResponse'
+          beforeRequest: 'beforeRegister'
+          afterResponse: 'afterRegister'
       - post:
           url: '{{ frontend }}/setUser'
           name: 'login'
@@ -114,16 +92,19 @@ scenarios:
           url: '{{ frontend }}/'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
-      # Register first (will succeed or return "user exists" which is fine)
+      # Check if user needs registration
+      - function: 'setNeedsRegistration'
+      # Register only if not already registered
       - post:
           url: '{{ frontend }}/register'
           name: 'register'
+          ifTrue: 'needsRegistration'
           followRedirect: false
           form:
             userName: '{{ userName }}'
             password: '{{ password }}'
-          beforeRequest: 'beforeRequest'
-          afterResponse: 'afterResponse'
+          beforeRequest: 'beforeRegister'
+          afterResponse: 'afterRegister'
       - post:
           url: '{{ frontend }}/setUser'
           name: 'login'
