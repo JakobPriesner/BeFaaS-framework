@@ -489,6 +489,18 @@ module.exports = lib.serverless.router(router => {
       }
     } else {
       console.error(`Failed to register user ${userName}: ${registerResult.error}`)
+      // If user already exists, try to log them in instead
+      const authResult = await ctx.lib.call('login', { userName, password })
+      if (authResult.success) {
+        emptyCartSize(ctx)
+        storageObj.userName = userName
+        storageObj.userPassword = password || ''
+        storageObj.jwtToken = authResult.accessToken
+        console.log(`User ${userName} already existed, logged in successfully`)
+      } else {
+        console.error(`Failed to login existing user ${userName}: ${authResult.error}`)
+        storageObj.jwtToken = ''
+      }
     }
 
     ctx.type = 'application/json'

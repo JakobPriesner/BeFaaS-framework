@@ -5,6 +5,7 @@
   "main": "index.js",
   "dependencies": {
     "@befaas/lib": "*",
+    "aws-jwt-verify": "^4.0.1",
     "card-validator": "^8.1.1"
   },
   "scripts": {

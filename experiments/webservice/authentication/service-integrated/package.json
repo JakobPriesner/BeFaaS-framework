@@ -1,6 +1,5 @@
 {
   "dependencies": {
-    "jsonwebtoken": "^9.0.2",
-    "jwks-rsa": "^3.1.0"
+    "aws-jwt-verify": "^4.0.1"
   }
 }
