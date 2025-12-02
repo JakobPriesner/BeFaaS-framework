@@ -94,11 +94,16 @@ async function main() {
       endpoints = await runDeploy(config.experiment, config.architecture, buildDir);
 
       // Wait for deployment to stabilize
-      console.log('\nWaiting for deployment to stabilize...');
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      const isMonolith = config.architecture === 'monolith';
+      const stabilizationDelay = isMonolith ? 180000 : 5000; // 3 min for ECS, 5s for Lambda
+      const healthCheckRetries = isMonolith ? 20 : 10;
+      const healthCheckDelay = isMonolith ? 10000 : 3000; // 10s between retries for ECS
+
+      console.log(`\nWaiting for deployment to stabilize (${stabilizationDelay / 1000}s)...`);
+      await new Promise(resolve => setTimeout(resolve, stabilizationDelay));
 
       // Health check
-      const isHealthy = await checkHealth(endpoints);
+      const isHealthy = await checkHealth(endpoints, healthCheckRetries, healthCheckDelay);
       if (!isHealthy) {
         throw new Error('Deployment failed health check');
       }

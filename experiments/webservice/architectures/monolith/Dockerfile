@@ -2,28 +2,20 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy all shared code
-COPY functions/ ./functions/
-COPY auth/ ./auth/
-COPY productcatalog/ ./productcatalog/
-COPY currency/ ./currency/
-COPY microservices/ ./microservices/
-# Copy auth again to microservices/auth (after microservices copy so it doesn't get overwritten)
-COPY auth/ ./microservices/auth/
+# Copy package.json first for better Docker layer caching
+COPY package*.json ./
 
-# Copy monolith-specific files
-COPY monolith/package*.json ./
-COPY monolith/server.js ./
-
-# Install dependencies (both for monolith and microservices)
+# Install dependencies
 RUN npm install --production
 
-# Install microservice dependencies
-RUN cd microservices/product-service && npm install --production
-RUN cd microservices/cart-service && npm install --production
-RUN cd microservices/order-service && npm install --production
-RUN cd microservices/content-service && npm install --production
-RUN cd microservices/frontend-service && npm install --production
+# Copy all application code
+COPY index.js ./
+COPY functions/ ./functions/
+COPY auth/ ./auth/
+
+# Copy data directories (used by functions)
+COPY productcatalog/ ./productcatalog/
+COPY currency/ ./currency/
 
 # Expose port
 EXPOSE 3000
