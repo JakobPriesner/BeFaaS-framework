@@ -1,5 +1,10 @@
 version: '3.8'
 
+# Docker Compose for local development of microservices architecture
+# Usage:
+#   1. Run build first: node build.js none _build
+#   2. Then: docker-compose up --build
+
 services:
   redis:
     image: redis:7-alpine
@@ -15,24 +20,57 @@ services:
       timeout: 3s
       retries: 3
 
-  product-service:
+  frontend-service:
     build:
-      context: ../
-      dockerfile: microservices/product-service/Dockerfile
+      context: ./_build/frontend-service
+      dockerfile: Dockerfile
     ports:
-      - "3001:3001"
+      - "3000:3000"
     environment:
-      - PORT=3001
+      - PORT=3000
+      - NODE_ENV=development
+      - CLOUDMAP_NAMESPACE=local
+      - FRONTEND_SERVICE_URL=http://frontend-service:3000
       - PRODUCT_SERVICE_URL=http://product-service:3001
       - CART_SERVICE_URL=http://cart-service:3002
       - ORDER_SERVICE_URL=http://order-service:3003
       - CONTENT_SERVICE_URL=http://content-service:3004
-      # Authentication configuration
-      - USE_AUTH=false
-      - AUTH_PROVIDER=basic
-      - JWT_SECRET=change-this-in-production
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - befaas-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      cart-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+      content-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  product-service:
+    build:
+      context: ./_build/product-service
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - NODE_ENV=development
+      - CLOUDMAP_NAMESPACE=local
+      - FRONTEND_SERVICE_URL=http://frontend-service:3000
+      - PRODUCT_SERVICE_URL=http://product-service:3001
+      - CART_SERVICE_URL=http://cart-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - CONTENT_SERVICE_URL=http://content-service:3004
       - REDIS_URL=redis://redis:6379
     networks:
       - befaas-network
@@ -42,28 +80,25 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
       interval: 30s
-      timeout: 3s
+      timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 10s
 
   cart-service:
     build:
-      context: ../
-      dockerfile: microservices/cart-service/Dockerfile
+      context: ./_build/cart-service
+      dockerfile: Dockerfile
     ports:
       - "3002:3002"
     environment:
       - PORT=3002
+      - NODE_ENV=development
+      - CLOUDMAP_NAMESPACE=local
+      - FRONTEND_SERVICE_URL=http://frontend-service:3000
       - PRODUCT_SERVICE_URL=http://product-service:3001
       - CART_SERVICE_URL=http://cart-service:3002
       - ORDER_SERVICE_URL=http://order-service:3003
       - CONTENT_SERVICE_URL=http://content-service:3004
-      # Authentication configuration
-      - USE_AUTH=false
-      - AUTH_PROVIDER=basic
-      - JWT_SECRET=change-this-in-production
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
       - REDIS_URL=redis://redis:6379
     networks:
       - befaas-network
@@ -73,59 +108,59 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
       interval: 30s
-      timeout: 3s
+      timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 10s
 
   order-service:
     build:
-      context: ../
-      dockerfile: microservices/order-service/Dockerfile
+      context: ./_build/order-service
+      dockerfile: Dockerfile
     ports:
       - "3003:3003"
     environment:
       - PORT=3003
+      - NODE_ENV=development
+      - CLOUDMAP_NAMESPACE=local
+      - FRONTEND_SERVICE_URL=http://frontend-service:3000
       - PRODUCT_SERVICE_URL=http://product-service:3001
       - CART_SERVICE_URL=http://cart-service:3002
       - ORDER_SERVICE_URL=http://order-service:3003
       - CONTENT_SERVICE_URL=http://content-service:3004
-      # Authentication configuration
-      - USE_AUTH=false
-      - AUTH_PROVIDER=basic
-      - JWT_SECRET=change-this-in-production
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
       - REDIS_URL=redis://redis:6379
     networks:
       - befaas-network
     depends_on:
       redis:
         condition: service_healthy
+      cart-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      content-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
       interval: 30s
-      timeout: 3s
+      timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 10s
 
   content-service:
     build:
-      context: ../
-      dockerfile: microservices/content-service/Dockerfile
+      context: ./_build/content-service
+      dockerfile: Dockerfile
     ports:
       - "3004:3004"
     environment:
       - PORT=3004
+      - NODE_ENV=development
+      - CLOUDMAP_NAMESPACE=local
+      - FRONTEND_SERVICE_URL=http://frontend-service:3000
       - PRODUCT_SERVICE_URL=http://product-service:3001
       - CART_SERVICE_URL=http://cart-service:3002
       - ORDER_SERVICE_URL=http://order-service:3003
       - CONTENT_SERVICE_URL=http://content-service:3004
-      # Authentication configuration
-      - USE_AUTH=false
-      - AUTH_PROVIDER=basic
-      - JWT_SECRET=change-this-in-production
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
       - REDIS_URL=redis://redis:6379
     networks:
       - befaas-network
@@ -135,48 +170,9 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
       interval: 30s
-      timeout: 3s
+      timeout: 5s
       retries: 3
-      start_period: 5s
-
-  frontend-service:
-    build:
-      context: ../
-      dockerfile: microservices/frontend-service/Dockerfile
-    ports:
-      - "3000:3000"
-    environment:
-      - PORT=3000
-      - PRODUCT_SERVICE_URL=http://product-service:3001
-      - CART_SERVICE_URL=http://cart-service:3002
-      - ORDER_SERVICE_URL=http://order-service:3003
-      - CONTENT_SERVICE_URL=http://content-service:3004
-      # Authentication configuration
-      - USE_AUTH=false
-      - AUTH_PROVIDER=basic
-      - JWT_SECRET=change-this-in-production
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_URL=redis://redis:6379
-    networks:
-      - befaas-network
-    depends_on:
-      redis:
-        condition: service_healthy
-      product-service:
-        condition: service_started
-      cart-service:
-        condition: service_started
-      order-service:
-        condition: service_started
-      content-service:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
+      start_period: 10s
 
 networks:
   befaas-network:

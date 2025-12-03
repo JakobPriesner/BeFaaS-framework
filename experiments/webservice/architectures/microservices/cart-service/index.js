@@ -1,6 +1,6 @@
 const express = require('express')
-const lib = require('@befaas/lib')
-const { configureBeFaaSLib } = require('./shared/libConfig')
+const Redis = require('ioredis')
+const { configureBeFaaSLib, lib, callService } = require('./shared/libConfig')
 
 // Import handler functions
 const getCart = require('./functions/getcart')
@@ -11,19 +11,69 @@ const cartKvStorage = require('./functions/cartkvstorage')
 const app = express()
 app.use(express.json())
 
-// Configure BeFaaS lib for microservices
+// Configure microservices
 const { namespace } = configureBeFaaSLib()
 
-// Initialize BeFaaS lib - this handles Redis connection internally
-lib.init()
+// Initialize Redis connection for cart storage
+const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379'
+let redis = null
 
-// Create context object using BeFaaS lib
+function initRedis() {
+  try {
+    redis = new Redis(redisUrl, {
+      retryDelayOnFailover: 100,
+      maxRetriesPerRequest: 3,
+      lazyConnect: true
+    })
+
+    redis.on('error', (err) => {
+      console.error('Redis connection error:', err.message)
+    })
+
+    redis.on('connect', () => {
+      console.log('Connected to Redis')
+    })
+
+    // Connect asynchronously - don't block startup
+    redis.connect().catch(err => {
+      console.error('Failed to connect to Redis:', err.message)
+    })
+  } catch (err) {
+    console.error('Failed to initialize Redis:', err.message)
+  }
+}
+
+initRedis()
+
+// Create context object with db access for cart operations
 function createContext() {
-  return lib.context({
-    call: async (functionName, event) => {
-      return await lib.call(functionName, event)
+  return {
+    call: callService,
+    db: {
+      get: async (key) => {
+        if (!redis) return null
+        try {
+          const value = await redis.get(`cart:${key}`)
+          return value ? JSON.parse(value) : null
+        } catch (err) {
+          console.error('Redis get error:', err.message)
+          return null
+        }
+      },
+      set: async (key, value) => {
+        if (!redis) return
+        try {
+          if (value === null) {
+            await redis.del(`cart:${key}`)
+          } else {
+            await redis.set(`cart:${key}`, JSON.stringify(value))
+          }
+        } catch (err) {
+          console.error('Redis set error:', err.message)
+        }
+      }
     }
-  })
+  }
 }
 
 // Health check endpoint

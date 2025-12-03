@@ -321,7 +321,8 @@ resource "aws_lb_target_group" "monolith" {
     matcher             = "200"
   }
 
-  deregistration_delay = 30
+  # Reduced for faster cleanup
+  deregistration_delay = 5
 
   tags = {
     Project = local.project_name

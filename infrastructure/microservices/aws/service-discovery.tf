@@ -1,11 +1,11 @@
 # AWS Cloud Map Private DNS Namespace
 resource "aws_service_discovery_private_dns_namespace" "microservices" {
-  name        = "${var.deployment_id}.local"
+  name        = "${local.project_name}.local"
   description = "Private DNS namespace for microservices"
-  vpc         = var.vpc_id
+  vpc         = local.vpc_id
 
   tags = {
-    DeploymentId = var.deployment_id
+    Project      = local.project_name
     Architecture = "microservices"
   }
 }
@@ -31,8 +31,11 @@ resource "aws_service_discovery_service" "service" {
     failure_threshold = 1
   }
 
+  # Allow destroy even with registered instances
+  force_destroy = true
+
   tags = {
-    DeploymentId = var.deployment_id
-    Service      = each.key
+    Project = local.project_name
+    Service = each.key
   }
 }

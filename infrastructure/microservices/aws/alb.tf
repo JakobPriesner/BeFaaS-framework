@@ -1,8 +1,8 @@
 # Application Load Balancer Security Group
 resource "aws_security_group" "alb" {
-  name        = "${var.deployment_id}-alb"
+  name        = "${local.project_name}-microservices-alb"
   description = "Security group for Application Load Balancer"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   ingress {
     from_port   = 80
@@ -26,33 +26,33 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name         = "${var.deployment_id}-alb"
-    DeploymentId = var.deployment_id
+    Name    = "${local.project_name}-microservices-alb"
+    Project = local.project_name
   }
 }
 
 # Application Load Balancer
 resource "aws_lb" "microservices" {
-  name               = "${var.deployment_id}-microservices"
+  name               = "${local.project_name}-ms"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = var.public_subnet_ids
+  subnets            = local.subnet_ids
 
   enable_deletion_protection = false
 
   tags = {
-    DeploymentId = var.deployment_id
+    Project      = local.project_name
     Architecture = "microservices"
   }
 }
 
 # Target Group for Frontend Service
 resource "aws_lb_target_group" "frontend" {
-  name        = "${var.deployment_id}-frontend"
+  name        = "${local.project_name}-ms"
   port        = 3000
   protocol    = "HTTP"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
   target_type = "ip"
 
   health_check {
@@ -66,11 +66,12 @@ resource "aws_lb_target_group" "frontend" {
     matcher             = "200"
   }
 
-  deregistration_delay = 30
+  # Reduced for faster cleanup
+  deregistration_delay = 5
 
   tags = {
-    DeploymentId = var.deployment_id
-    Service      = "frontend-service"
+    Project = local.project_name
+    Service = "frontend-service"
   }
 }
 
@@ -86,6 +87,6 @@ resource "aws_lb_listener" "http" {
   }
 
   tags = {
-    DeploymentId = var.deployment_id
+    Project = local.project_name
   }
 }

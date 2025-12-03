@@ -1,6 +1,5 @@
 const express = require('express')
-const lib = require('@befaas/lib')
-const { configureBeFaaSLib } = require('./shared/libConfig')
+const { configureBeFaaSLib, callService } = require('./shared/libConfig')
 
 // Import handler functions
 const getProduct = require('./functions/getproduct')
@@ -11,15 +10,13 @@ const listRecommendations = require('./functions/listrecommendations')
 const app = express()
 app.use(express.json())
 
-// Configure BeFaaS lib for microservices
+// Configure microservices
 const { namespace } = configureBeFaaSLib()
 
-// Create context object using BeFaaS lib
+// Create context object for service-to-service calls
 function createContext() {
   return {
-    call: async (functionName, event) => {
-      return await lib.call(functionName, event)
-    }
+    call: callService
   }
 }
 

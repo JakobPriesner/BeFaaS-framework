@@ -33,6 +33,18 @@ output "alb_url" {
   value       = "http://${aws_lb.microservices.dns_name}"
 }
 
+output "health_url" {
+  description = "Health check URL for the frontend service"
+  value       = "http://${aws_lb.microservices.dns_name}/health"
+}
+
+output "ecr_repositories" {
+  description = "ECR repository URLs for each service"
+  value = {
+    for service_name, repo in aws_ecr_repository.service : service_name => repo.repository_url
+  }
+}
+
 output "service_arns" {
   description = "ARNs of all ECS services"
   value = {
@@ -45,4 +57,14 @@ output "cloudmap_service_arns" {
   value = {
     for service_name, service in aws_service_discovery_service.service : service_name => service.arn
   }
+}
+
+output "cognito_user_pool_id" {
+  description = "Cognito User Pool ID"
+  value       = aws_cognito_user_pool.main.id
+}
+
+output "cognito_client_id" {
+  description = "Cognito User Pool Client ID"
+  value       = aws_cognito_user_pool_client.main.id
 }

@@ -9,49 +9,139 @@ terraform {
   }
 }
 
+provider "aws" {
+  region = var.aws_region
+}
+
+# Reference experiment state for project name
+data "terraform_remote_state" "exp" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../../experiment/terraform.tfstate"
+  }
+}
+
+# Reference VPC state
+data "terraform_remote_state" "vpc" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../../services/vpc/terraform.tfstate"
+  }
+}
+
+# Reference Redis state
+data "terraform_remote_state" "redis" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../../services/redisAws/terraform.tfstate"
+  }
+}
+
 locals {
+  project_name       = data.terraform_remote_state.exp.outputs.project_name
+  subnet_ids         = data.terraform_remote_state.vpc.outputs.subnet_ids
+  vpc_security_groups = data.terraform_remote_state.vpc.outputs.security_groups
+  redis_url          = data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT
+}
+
+# Get VPC ID from first subnet
+data "aws_subnet" "first" {
+  id = local.subnet_ids[0]
+}
+
+locals {
+  vpc_id = data.aws_subnet.first.vpc_id
+
   services = {
     "frontend-service" = {
       port           = 3000
       container_port = 3000
       cpu            = 256
       memory         = 512
-      desired_count  = 2
+      desired_count  = 1
     }
     "product-service" = {
       port           = 3001
       container_port = 3001
       cpu            = 256
       memory         = 512
-      desired_count  = 2
+      desired_count  = 1
     }
     "cart-service" = {
       port           = 3002
       container_port = 3002
       cpu            = 256
       memory         = 512
-      desired_count  = 2
+      desired_count  = 1
     }
     "order-service" = {
       port           = 3003
       container_port = 3003
       cpu            = 256
       memory         = 512
-      desired_count  = 2
+      desired_count  = 1
     }
     "content-service" = {
       port           = 3004
       container_port = 3004
       cpu            = 256
       memory         = 512
-      desired_count  = 2
+      desired_count  = 1
     }
   }
 }
 
+# Cognito User Pool for authentication
+resource "aws_cognito_user_pool" "main" {
+  name = "${local.project_name}-microservices-user-pool"
+
+  password_policy {
+    minimum_length                   = 8
+    require_lowercase                = true
+    require_uppercase                = true
+    require_numbers                  = true
+    require_symbols                  = false
+    temporary_password_validity_days = 7
+  }
+
+  tags = {
+    Project      = local.project_name
+    Architecture = "microservices"
+  }
+}
+
+# Cognito User Pool Client
+resource "aws_cognito_user_pool_client" "main" {
+  name         = "${local.project_name}-microservices-client"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  access_token_validity  = 60
+  id_token_validity      = 60
+  refresh_token_validity = 30
+
+  token_validity_units {
+    access_token  = "minutes"
+    id_token      = "minutes"
+    refresh_token = "days"
+  }
+
+  explicit_auth_flows = [
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH",
+    "ALLOW_USER_SRP_AUTH",
+    "ALLOW_ADMIN_USER_PASSWORD_AUTH"
+  ]
+
+  generate_secret               = false
+  prevent_user_existence_errors = "ENABLED"
+}
+
 # ECS Cluster
 resource "aws_ecs_cluster" "microservices" {
-  name = "${var.deployment_id}-microservices"
+  name = "${local.project_name}-microservices"
 
   setting {
     name  = "containerInsights"
@@ -59,15 +149,14 @@ resource "aws_ecs_cluster" "microservices" {
   }
 
   tags = {
-    DeploymentId = var.deployment_id
-    BuildId      = var.build_id
+    Project      = local.project_name
     Architecture = "microservices"
   }
 }
 
 # ECS Task Execution Role
 resource "aws_iam_role" "ecs_task_execution" {
-  name = "${var.deployment_id}-ecs-task-execution"
+  name = "${local.project_name}-microservices-task-execution"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -83,7 +172,7 @@ resource "aws_iam_role" "ecs_task_execution" {
   })
 
   tags = {
-    DeploymentId = var.deployment_id
+    Project = local.project_name
   }
 }
 
@@ -94,7 +183,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_policy" {
 
 # ECS Task Role (for application permissions)
 resource "aws_iam_role" "ecs_task" {
-  name = "${var.deployment_id}-ecs-task"
+  name = "${local.project_name}-microservices-task"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -110,7 +199,7 @@ resource "aws_iam_role" "ecs_task" {
   })
 
   tags = {
-    DeploymentId = var.deployment_id
+    Project = local.project_name
   }
 }
 
@@ -137,11 +226,33 @@ resource "aws_iam_role_policy" "ecs_task_cloudmap" {
   })
 }
 
+# IAM Policy for Cognito operations
+resource "aws_iam_role_policy" "ecs_task_cognito" {
+  name = "cognito-access"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminConfirmSignUp",
+          "cognito-idp:AdminGetUser",
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminSetUserPassword"
+        ]
+        Resource = aws_cognito_user_pool.main.arn
+      }
+    ]
+  })
+}
+
 # Security Group for ECS Tasks
 resource "aws_security_group" "ecs_tasks" {
-  name        = "${var.deployment_id}-ecs-tasks"
+  name        = "${local.project_name}-microservices-ecs"
   description = "Security group for microservices ECS tasks"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   # Allow all internal traffic within the security group
   ingress {
@@ -167,8 +278,8 @@ resource "aws_security_group" "ecs_tasks" {
   }
 
   tags = {
-    Name         = "${var.deployment_id}-ecs-tasks"
-    DeploymentId = var.deployment_id
+    Name    = "${local.project_name}-microservices-ecs"
+    Project = local.project_name
   }
 }
 
@@ -176,12 +287,12 @@ resource "aws_security_group" "ecs_tasks" {
 resource "aws_cloudwatch_log_group" "microservices" {
   for_each = local.services
 
-  name              = "/aws/${var.deployment_id}/${each.key}"
+  name              = "/aws/ecs/${local.project_name}/${each.key}"
   retention_in_days = 7
 
   tags = {
-    DeploymentId = var.deployment_id
-    Service      = each.key
+    Project = local.project_name
+    Service = each.key
   }
 }
 
@@ -189,7 +300,7 @@ resource "aws_cloudwatch_log_group" "microservices" {
 resource "aws_ecs_task_definition" "service" {
   for_each = local.services
 
-  family                   = "${var.deployment_id}-${each.key}"
+  family                   = "${local.project_name}-${each.key}"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = each.value.cpu
@@ -200,7 +311,7 @@ resource "aws_ecs_task_definition" "service" {
   container_definitions = jsonencode([
     {
       name      = each.key
-      image     = "${var.container_registry}/${each.key}:${var.build_id}"
+      image     = "${aws_ecr_repository.service[each.key].repository_url}:${var.image_tag}"
       essential = true
 
       portMappings = [
@@ -216,12 +327,12 @@ resource "aws_ecs_task_definition" "service" {
           value = each.key
         },
         {
-          name  = "SERVICE_DISCOVERY_PROVIDER"
-          value = "aws"
+          name  = "PORT"
+          value = tostring(each.value.container_port)
         },
         {
-          name  = "CLOUDMAP_NAMESPACE_ID"
-          value = aws_service_discovery_private_dns_namespace.microservices.id
+          name  = "NODE_ENV"
+          value = "production"
         },
         {
           name  = "CLOUDMAP_NAMESPACE"
@@ -232,12 +343,16 @@ resource "aws_ecs_task_definition" "service" {
           value = var.aws_region
         },
         {
-          name  = "PORT"
-          value = tostring(each.value.container_port)
+          name  = "REDIS_URL"
+          value = local.redis_url
         },
         {
-          name  = "REDIS_URL"
-          value = var.redis_url
+          name  = "COGNITO_USER_POOL_ID"
+          value = aws_cognito_user_pool.main.id
+        },
+        {
+          name  = "COGNITO_CLIENT_ID"
+          value = aws_cognito_user_pool_client.main.id
         }
       ]
 
@@ -261,8 +376,8 @@ resource "aws_ecs_task_definition" "service" {
   ])
 
   tags = {
-    DeploymentId = var.deployment_id
-    Service      = each.key
+    Project = local.project_name
+    Service = each.key
   }
 }
 
@@ -277,9 +392,9 @@ resource "aws_ecs_service" "service" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = false
+    subnets          = local.subnet_ids
+    security_groups  = concat([aws_security_group.ecs_tasks.id], local.vpc_security_groups)
+    assign_public_ip = true
   }
 
   service_registries {
@@ -302,7 +417,7 @@ resource "aws_ecs_service" "service" {
   ]
 
   tags = {
-    DeploymentId = var.deployment_id
-    Service      = each.key
+    Project = local.project_name
+    Service = each.key
   }
 }

@@ -94,10 +94,12 @@ async function main() {
       endpoints = await runDeploy(config.experiment, config.architecture, buildDir);
 
       // Wait for deployment to stabilize
-      const isMonolith = config.architecture === 'monolith';
-      const stabilizationDelay = isMonolith ? 180000 : 5000; // 3 min for ECS, 5s for Lambda
-      const healthCheckRetries = isMonolith ? 20 : 10;
-      const healthCheckDelay = isMonolith ? 10000 : 3000; // 10s between retries for ECS
+      const isEcsBased = config.architecture === 'monolith' || config.architecture === 'microservices';
+      const isMicroservices = config.architecture === 'microservices';
+      // Microservices need longer startup (5 services vs 1), allow up to ~1 hour total
+      const stabilizationDelay = isMicroservices ? 300000 : (isEcsBased ? 180000 : 5000); // 5 min for microservices, 3 min for monolith, 5s for Lambda
+      const healthCheckRetries = isMicroservices ? 55 : (isEcsBased ? 20 : 10); // 55 retries for microservices
+      const healthCheckDelay = isMicroservices ? 60000 : (isEcsBased ? 10000 : 3000); // 60s between retries for microservices
 
       console.log(`\nWaiting for deployment to stabilize (${stabilizationDelay / 1000}s)...`);
       await new Promise(resolve => setTimeout(resolve, stabilizationDelay));

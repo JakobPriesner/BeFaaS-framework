@@ -1,21 +1,20 @@
 const express = require('express')
-const lib = require('@befaas/lib')
-const { configureBeFaaSLib } = require('./shared/libConfig')
+const { configureBeFaaSLib, callService } = require('./shared/libConfig')
 
 // Import handler functions
 const checkout = require('./functions/checkout')
 const payment = require('./functions/payment')
 const shipmentQuote = require('./functions/shipmentquote')
+const shipOrder = require('./functions/shiporder')
 const email = require('./functions/email')
 
 const app = express()
 app.use(express.json())
 
-// Configure BeFaaS lib for microservices
+// Configure microservices
 const { namespace } = configureBeFaaSLib()
 
-
-// Create context object using BeFaaS lib
+// Create context object for service-to-service calls
 function createContext() {
   return {
     call: async (functionName, event) => {
@@ -29,9 +28,12 @@ function createContext() {
       if (functionName === 'email') {
         return await email(event, createContext())
       }
+      if (functionName === 'shiporder') {
+        return await shipOrder(event, createContext())
+      }
 
-      // For external service calls, use service discovery
-      return await lib.call(functionName, event)
+      // For external service calls, use HTTP service discovery
+      return await callService(functionName, event)
     }
   }
 }
@@ -82,6 +84,17 @@ app.post('/email', async (req, res) => {
     res.json(result)
   } catch (error) {
     console.error('Error in email:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+app.post('/shiporder', async (req, res) => {
+  try {
+    const ctx = createContext()
+    const result = await shipOrder(req.body, ctx)
+    res.json(result)
+  } catch (error) {
+    console.error('Error in shiporder:', error)
     res.status(500).json({ error: error.message })
   }
 })
