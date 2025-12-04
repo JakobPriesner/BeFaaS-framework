@@ -148,6 +148,35 @@ async function destroyMonolith(experiment) {
   console.log(`Destroying monolith deployment for experiment: ${experiment}`);
 
   const projectRoot = path.join(__dirname, '..');
+  const awsRegion = process.env.AWS_REGION || 'us-east-1';
+
+  // Get project name for ECS cluster identification
+  const expDir = path.join(projectRoot, 'infrastructure', 'experiment');
+  let projectName = null;
+  try {
+    const expOutput = getTerraformOutputJson(expDir);
+    projectName = expOutput.project_name?.value;
+  } catch (e) {
+    console.log('Could not get project name, skipping ECS scale-down');
+  }
+
+  // Scale down ECS service to 0 first for faster cleanup
+  if (projectName) {
+    const clusterName = `${projectName}-monolith`;
+    console.log(`Scaling down ECS service in cluster ${clusterName}...`);
+    try {
+      execSync(
+        `aws ecs update-service --cluster ${clusterName} --service monolith --desired-count 0 --region ${awsRegion}`,
+        { stdio: 'pipe' }
+      );
+      console.log('  ✓ Scaled down monolith service');
+    } catch (e) {
+      // Service might not exist, ignore
+    }
+    // Wait a few seconds for tasks to start draining
+    console.log('Waiting for tasks to drain (10s)...');
+    await new Promise(resolve => setTimeout(resolve, 10000));
+  }
 
   // Destroy in reverse order
   // Note: ECR has force_delete=true in Terraform, so it will be deleted even with images
