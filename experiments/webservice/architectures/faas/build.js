@@ -69,7 +69,25 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
 
   // 4. Copy the usecase from the experiments/webservice/functions/<usecase>/index.js to handler.js
   // Also rewrite require paths for shared modules
-  const useCasePath = path.join(useCaseDir, 'index.js');
+  // For 'none' auth strategy, use mock handlers for login and register to skip Cognito calls
+  const authMockFunctions = ['login', 'register'];
+  const authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+
+  let useCasePath;
+  if (authStrategy === 'none' && authMockFunctions.includes(useCase)) {
+    // Use mock handler from authentication/none directory
+    const mockHandlerPath = path.join(authStrategyDir, `${useCase}.js`);
+    if (fs.existsSync(mockHandlerPath)) {
+      useCasePath = mockHandlerPath;
+      console.log(`  Using mock ${useCase} handler for 'none' auth strategy`);
+    } else {
+      useCasePath = path.join(useCaseDir, 'index.js');
+      console.warn(`  ⚠️  Mock handler not found for ${useCase}, using real handler`);
+    }
+  } else {
+    useCasePath = path.join(useCaseDir, 'index.js');
+  }
+
   const handlerPath = path.join(tmpDir, 'handler.js');
 
   let handlerCode = fs.readFileSync(useCasePath, 'utf8');
@@ -86,7 +104,6 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
     fs.mkdirSync(authDir, { recursive: true });
   }
 
-  const authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
   const authFiles = fs.readdirSync(authStrategyDir);
 
   authFiles.forEach(file => {
@@ -145,21 +162,32 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
   console.log(`Build complete for ${useCase} in ${tmpDir}`);
 }
 
-async function build(tmpDir, authStrategy) {
-  console.log(`Building FaaS architecture with auth strategy: ${authStrategy}`);
+async function build(tmpDir, authStrategy, bundleMode = 'minimal') {
+  console.log(`Building FaaS architecture with auth strategy: ${authStrategy}, bundle mode: ${bundleMode}`);
 
-  // Get all function names from the functions directory
+  let useCases;
   const functionsDir = path.join(__dirname, '..', '..', 'functions');
-  const useCases = fs.readdirSync(functionsDir).filter(file => {
-    // Exclude _build directory and other non-function directories
-    if (file.startsWith('_') || file.startsWith('.')) {
-      return false;
-    }
-    const fullPath = path.join(functionsDir, file);
-    return fs.statSync(fullPath).isDirectory();
-  });
 
-  console.log(`Found ${useCases.length} functions to build: ${useCases.join(', ')}`);
+  if (bundleMode === 'all') {
+    // Build all functions from the functions directory
+    useCases = fs.readdirSync(functionsDir).filter(file => {
+      // Exclude _build directory and other non-function directories
+      if (file.startsWith('_') || file.startsWith('.')) {
+        return false;
+      }
+      const fullPath = path.join(functionsDir, file);
+      return fs.statSync(fullPath).isDirectory();
+    });
+    console.log(`Bundle mode 'all': Building all ${useCases.length} functions from directory`);
+  } else {
+    // Build only functions defined in experiment.json (minimal mode)
+    const experimentJsonPath = path.join(__dirname, '..', '..', 'experiment.json');
+    const experimentConfig = JSON.parse(fs.readFileSync(experimentJsonPath, 'utf8'));
+    useCases = Object.keys(experimentConfig.program.functions);
+    console.log(`Bundle mode 'minimal': Building ${useCases.length} functions from experiment.json`);
+  }
+
+  console.log(`Functions to build: ${useCases.join(', ')}`);
 
   // Build each function in its own directory
   for (const useCase of useCases) {

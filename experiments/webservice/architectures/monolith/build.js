@@ -64,6 +64,9 @@ async function build(tmpDir, authStrategy) {
     return fs.statSync(path.join(authStrategyDir, file)).isFile();
   });
 
+  // Functions that should use mock handlers in 'none' auth mode
+  const authMockFunctions = ['login', 'register'];
+
   console.log(`  Copying ${functionNames.length} functions...`);
   functionNames.forEach(functionName => {
     const srcFunctionDir = path.join(sourceFunctionsDir, functionName);
@@ -71,6 +74,16 @@ async function build(tmpDir, authStrategy) {
 
     // Recursively copy the entire function directory (includes html_templates, etc.)
     copyDirRecursive(srcFunctionDir, destFunctionDir);
+
+    // For 'none' auth strategy, use mock handlers for login and register to skip Cognito calls
+    if (authStrategy === 'none' && authMockFunctions.includes(functionName)) {
+      const mockHandlerPath = path.join(authStrategyDir, `${functionName}.js`);
+      if (fs.existsSync(mockHandlerPath)) {
+        const destIndexPath = path.join(destFunctionDir, 'index.js');
+        fs.copyFileSync(mockHandlerPath, destIndexPath);
+        console.log(`    Using mock ${functionName} handler for 'none' auth strategy`);
+      }
+    }
 
     // Copy auth files into each function's directory (functions use require('./auth'))
     const destAuthDir = path.join(destFunctionDir, 'auth');

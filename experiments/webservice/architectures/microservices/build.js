@@ -77,7 +77,24 @@ function copyFunctionToService(functionName, serviceDir, authStrategy) {
     fs.mkdirSync(functionDir, { recursive: true });
   }
 
-  const srcPath = path.join(__dirname, '..', '..', 'functions', functionName, 'index.js');
+  // Functions that should use mock handlers in 'none' auth mode
+  const authMockFunctions = ['login', 'register'];
+  const authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+
+  let srcPath;
+  // For 'none' auth strategy, use mock handlers for login and register to skip Cognito calls
+  if (authStrategy === 'none' && authMockFunctions.includes(functionName)) {
+    const mockHandlerPath = path.join(authStrategyDir, `${functionName}.js`);
+    if (fs.existsSync(mockHandlerPath)) {
+      srcPath = mockHandlerPath;
+      console.log(`    Using mock ${functionName} handler for 'none' auth strategy`);
+    } else {
+      srcPath = path.join(__dirname, '..', '..', 'functions', functionName, 'index.js');
+    }
+  } else {
+    srcPath = path.join(__dirname, '..', '..', 'functions', functionName, 'index.js');
+  }
+
   const destPath = path.join(functionDir, 'index.js');
 
   // Copy function file as-is (like monolith does)
