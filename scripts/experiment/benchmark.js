@@ -21,9 +21,15 @@ async function runBenchmark(experiment, workload, outputDir) {
     return;
   }
 
-  const workloadConfigName = experimentConfig.services.workload.config;
+  // Use provided workload parameter or fall back to experiment.json config
+  let workloadConfigName = workload || experimentConfig.services.workload.config;
   if (!workloadConfigName) {
     throw new Error('Workload config not defined (services.workload.config)');
+  }
+
+  // Ensure workload has .yml extension
+  if (!workloadConfigName.endsWith('.yml') && !workloadConfigName.endsWith('.yaml')) {
+    workloadConfigName = `workload-${workloadConfigName}.yml`;
   }
 
   const workloadPath = path.join(projectRoot, 'experiments', experiment, workloadConfigName);
@@ -50,7 +56,9 @@ async function runBenchmark(experiment, workload, outputDir) {
 
     // Use spawn with inherit for stdin/stdout/stderr so output appears in real-time
     // and goes through our logging override
-    const child = spawn(workloadScript, [experiment], {
+    // Pass: experiment, experiment.json (default), workload file override
+    const scriptArgs = [experiment, 'experiment.json', workloadConfigName];
+    const child = spawn(workloadScript, scriptArgs, {
       cwd: projectRoot,
       stdio: ['inherit', 'pipe', 'pipe'],
       shell: '/bin/bash'
