@@ -2,9 +2,22 @@
 
 set -euo pipefail
 
-export AWS_DEFAULT_REGION=$AWS_REGION
-echo "Getting AWS logs" | chalk magenta
-for lg in $(aws logs describe-log-groups --log-group-name-prefix /aws/${BEFAAS_DEPLOYMENT_ID} | jq -r '.logGroups[].logGroupName'); do
+export AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
+echo "Getting AWS logs for deployment: ${BEFAAS_DEPLOYMENT_ID}" | chalk magenta
+echo "Using AWS region: ${AWS_DEFAULT_REGION}" | chalk blue
+
+# Check if log groups exist
+log_groups=$(aws logs describe-log-groups --log-group-name-prefix /aws/${BEFAAS_DEPLOYMENT_ID} | jq -r '.logGroups[].logGroupName')
+if [ -z "$log_groups" ]; then
+    echo "Warning: No CloudWatch log groups found with prefix /aws/${BEFAAS_DEPLOYMENT_ID}" | chalk yellow
+    echo "Available log groups:" | chalk yellow
+    aws logs describe-log-groups --limit 10 | jq -r '.logGroups[].logGroupName' | head -5 || true
+    exit 0
+fi
+
+echo "Found log groups: $(echo $log_groups | wc -w | tr -d ' ')" | chalk green
+
+for lg in $log_groups; do
   echo "Getting logs for $lg" | chalk magenta
   for ls in $(aws logs describe-log-streams --log-group-name $lg | jq -r '.logStreams[].logStreamName'); do
       echo "|--> $ls" | chalk magenta

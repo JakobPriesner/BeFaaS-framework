@@ -3,6 +3,59 @@ const path = require('path');
 const { execSync } = require('child_process');
 const { logSection } = require('./utils');
 
+/**
+ * Sanitize log files by removing malformed JSON entries
+ * This prevents the befaas/analysis container from crashing on truncated logs
+ * @param {string} logsDir - Directory containing log files
+ * @returns {number} - Number of malformed entries removed
+ */
+function sanitizeLogs(logsDir) {
+  let totalRemoved = 0;
+  const logFiles = fs.readdirSync(logsDir).filter(f => f.endsWith('.log') || f.endsWith('.json'));
+
+  for (const file of logFiles) {
+    const filePath = path.join(logsDir, file);
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) continue;
+
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n');
+    const validLines = [];
+    let removed = 0;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        validLines.push(line);
+        continue;
+      }
+
+      // Check if line contains BEFAAS JSON entry (may be prefixed with ANSI codes/terraform output)
+      const jsonMatch = trimmed.match(/BEFAAS(\{.*)$/);
+      if (jsonMatch) {
+        const jsonPart = jsonMatch[1];
+        try {
+          JSON.parse(jsonPart);
+          validLines.push(line);
+        } catch (e) {
+          // Malformed JSON - skip this line
+          removed++;
+        }
+      } else {
+        // Non-JSON line, keep it
+        validLines.push(line);
+      }
+    }
+
+    if (removed > 0) {
+      fs.writeFileSync(filePath, validLines.join('\n'));
+      totalRemoved += removed;
+    }
+  }
+
+  return totalRemoved;
+}
+
 async function analyzeResults(experiment, outputDir) {
   logSection('Analyzing Results');
 
@@ -24,152 +77,78 @@ async function analyzeResults(experiment, outputDir) {
   const absoluteAnalysisDir = path.resolve(analysisDir);
 
   try {
+    // Step 0: Sanitize logs by removing malformed JSON entries
+    console.log('\nStep 0: Sanitizing logs (removing malformed entries)...');
+    const removedCount = sanitizeLogs(absoluteLogsDir);
+    if (removedCount > 0) {
+      console.log(`  Removed ${removedCount} malformed log entries`);
+    } else {
+      console.log('  All log entries are valid');
+    }
+
     // Step 1: Generate dump.json using befaas/analysis container
     console.log('\nStep 1: Generating dump.json from logs...');
     const containerLogsDir = `/experiments/${path.relative(projectRoot, absoluteLogsDir)}`;
     const containerAnalysisDir = `/experiments/${path.relative(projectRoot, absoluteAnalysisDir)}`;
 
-    execSync(`docker run --rm -v ${projectRoot}:/experiments befaas/analysis ${containerLogsDir} ${containerAnalysisDir}`, {
+    execSync(`docker run --rm -v "${projectRoot}":/experiments befaas/analysis "${containerLogsDir}" "${containerAnalysisDir}"`, {
       stdio: 'inherit',
       shell: '/bin/bash'
     });
 
     const dumpFile = path.join(analysisDir, 'dump.json');
     if (!fs.existsSync(dumpFile)) {
-      console.log('⚠️  dump.json not created, skipping further analysis');
+      console.log('dump.json not created, skipping further analysis');
       return;
     }
 
-    console.log('✓ dump.json generated successfully');
+    console.log('dump.json generated successfully');
 
-    // Step 2: Generate performance plots
-    console.log('\nStep 2: Generating performance plots...');
-    const generatePlotsScript = path.join(projectRoot, 'scripts', 'generate_plots.py');
+    // Step 2: Generate insights.json with comprehensive metrics
+    console.log('\nStep 2: Generating insights.json...');
+    const generateInsightsScript = path.join(projectRoot, 'scripts', 'generate_insights.py');
     const requirementsFile = path.join(projectRoot, 'scripts', 'requirements.txt');
 
-    if (fs.existsSync(generatePlotsScript)) {
+    if (fs.existsSync(generateInsightsScript)) {
       try {
         // Check if required Python packages are installed
         try {
-          execSync('python3 -c "import matplotlib; import numpy; import scipy; import networkx"', {
-            stdio: 'pipe'
-          });
+          execSync('python3 -c "import numpy"', { stdio: 'pipe' });
         } catch (importError) {
           console.log('Installing Python dependencies...');
           if (fs.existsSync(requirementsFile)) {
-            execSync(`pip3 install -r ${requirementsFile}`, { stdio: 'inherit' });
+            execSync(`pip3 install -r "${requirementsFile}"`, { stdio: 'inherit' });
           } else {
-            execSync('pip3 install matplotlib numpy scipy networkx', { stdio: 'inherit' });
+            execSync('pip3 install numpy', { stdio: 'inherit' });
           }
         }
 
-        execSync(`python3 ${generatePlotsScript} ${dumpFile} ${analysisDir}`, {
+        execSync(`python3 "${generateInsightsScript}" "${dumpFile}" "${analysisDir}"`, {
           stdio: 'inherit'
         });
-        console.log('✓ Performance plots generated');
-
-        // Check if this is a stress test phase and generate stress-specific plots
-        const isStressTest = outputDir.includes('stress-ramp') || outputDir.includes('stress-auth');
-        if (isStressTest) {
-          console.log('\nGenerating stress test specific plots...');
-          try {
-            execSync(`python3 ${generatePlotsScript} --stress ${dumpFile} ${analysisDir}`, {
-              stdio: 'inherit'
-            });
-            console.log('✓ Stress test plots generated');
-          } catch (stressError) {
-            console.error('⚠️  Stress test plot generation failed:', stressError.message);
-          }
-        }
+        console.log('insights.json generated successfully');
       } catch (error) {
-        console.error('⚠️  Performance plot generation failed:', error.message);
-        console.log('   Try: pip3 install -r scripts/requirements.txt');
+        console.error('Insights generation failed:', error.message);
+        console.log('   Try: pip3 install numpy');
       }
     } else {
-      console.log('⚠️  generate_plots.py not found, skipping performance plots');
+      console.log('generate_insights.py not found, skipping insights generation');
     }
 
-    // Step 3: Validate HTTP responses
-    console.log('\nStep 3: Validating HTTP responses...');
-    const validateScript = path.join(projectRoot, 'scripts', 'validate_responses.py');
-    const artilleryLog = path.join(logsDir, 'artillery.log');
-
-    if (fs.existsSync(validateScript) && fs.existsSync(artilleryLog)) {
-      try {
-        execSync(`python3 ${validateScript} ${artilleryLog} ${analysisDir}`, {
-          stdio: 'inherit'
-        });
-        console.log('✓ HTTP response validation completed');
-      } catch (error) {
-        // Exit code 1 or 2 means warnings/errors were found but analysis completed
-        if (error.status === 1 || error.status === 2) {
-          console.log('✓ HTTP response validation completed (with warnings)');
-        } else {
-          console.error('⚠️  HTTP response validation failed:', error.message);
-        }
-      }
-    } else {
-      if (!fs.existsSync(artilleryLog)) {
-        console.log('⚠️  artillery.log not found, skipping HTTP validation');
-      } else {
-        console.log('⚠️  validate_responses.py not found, skipping HTTP validation');
-      }
-    }
-
-    // Step 4: Analyze AWS CloudWatch errors
-    console.log('\nStep 4: Analyzing AWS CloudWatch errors...');
-    const analyzeErrorsScript = path.join(projectRoot, 'scripts', 'analyze_errors.py');
-    const awsLog = path.join(logsDir, 'aws.log');
-
-    if (fs.existsSync(analyzeErrorsScript) && fs.existsSync(awsLog)) {
-      try {
-        execSync(`python3 ${analyzeErrorsScript} ${awsLog} ${analysisDir}`, {
-          stdio: 'inherit'
-        });
-        console.log('✓ Error analysis completed');
-      } catch (error) {
-        // Exit code 1 or 2 means errors were found but analysis completed
-        if (error.status === 1 || error.status === 2) {
-          console.log('✓ Error analysis completed (issues found)');
-        } else {
-          console.error('⚠️  Error analysis failed:', error.message);
-        }
-      }
-    } else {
-      if (!fs.existsSync(awsLog)) {
-        console.log('⚠️  aws.log not found, skipping error analysis');
-      } else {
-        console.log('⚠️  analyze_errors.py not found, skipping error analysis');
-      }
-    }
-
-    console.log('\n✓ Analysis completed successfully');
+    console.log('\nAnalysis completed successfully');
     console.log(`\nAnalysis results saved to: ${analysisDir}`);
-    console.log('  - dump.json: Raw performance data');
-    console.log('  - insights.json: Statistics for cross-run comparison');
-    console.log('  - validation_report.txt: HTTP response analysis');
-    console.log('  - error_analysis.txt: AWS CloudWatch error analysis');
-    console.log('  Performance Plots:');
-    console.log('    - response_time_*.png: Overall response time analysis');
-    console.log('    - endpoint_*.png: Per-endpoint performance');
-    console.log('    - category_*.png: Performance by category');
-    console.log('    - function_*.png: Function/microservice analysis');
-    console.log('    - callgraph_*.png: Function call graph visualizations');
-    console.log('    - auth_*.png: Authentication overhead analysis');
-
-    // Show stress test plots info if applicable
-    const isStressTestOutput = outputDir.includes('stress-ramp') || outputDir.includes('stress-auth');
-    if (isStressTestOutput) {
-      console.log('  Stress Test Plots:');
-      console.log('    - stress_response_vs_load.png: Response time vs concurrent requests');
-      console.log('    - stress_scaling_timeline.png: Load profile and latency over time');
-      console.log('    - stress_latency_buckets.png: Latency distribution at different loads');
-      console.log('    - stress_throughput_vs_latency.png: Throughput vs latency curve');
-      console.log('    - stress_summary.png: Summary dashboard');
-    }
+    console.log('  - dump.json: Raw performance data from logs');
+    console.log('  - insights.json: Comprehensive performance metrics');
+    console.log('    - HTTP status distribution and response times');
+    console.log('    - Per-endpoint metrics (request count, response times, auth times)');
+    console.log('    - Per-function metrics (request count, response times, auth times)');
+    console.log('    - Throughput timeline (requests/auth ops per minute)');
+    console.log('    - Correlations (load vs latency, load vs errors)');
+    console.log('    - Call chain breakdowns (time spent in each function)');
+    console.log('    - Auth chain breakdowns (auth time per function in chain)');
 
   } catch (error) {
-    console.error('✗ Analysis failed:', error.message);
+    console.error('Analysis failed:', error.message);
     console.log('Note: Analysis requires Docker and the befaas/analysis image');
     // Don't throw - analysis is optional
   }
