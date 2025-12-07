@@ -41,8 +41,20 @@ cd -
 export logdir=logs/$1/$(date +%Y-%m-%d_%H-%M-%S)
 mkdir -p $logdir
 
-for provider in $(jq -r '[.program.functions[].provider] | unique | .[]' "experiments/${1}/$exp_json"); do
-    ${SCRIPT_DIR}/logs/${provider}.sh "experiments/${1}/$exp_json"
+echo "Deployment ID: $BEFAAS_DEPLOYMENT_ID" | chalk blue
+echo "Log directory: $logdir" | chalk blue
+echo "AWS_REGION: ${AWS_REGION:-not set}" | chalk blue
+
+providers=$(jq -r '[.program.functions[].provider] | unique | .[]' "experiments/${1}/$exp_json")
+echo "Found providers: $providers" | chalk blue
+
+for provider in $providers; do
+    echo "Collecting logs for provider: $provider" | chalk cyan
+    if [ -f "${SCRIPT_DIR}/logs/${provider}.sh" ]; then
+        ${SCRIPT_DIR}/logs/${provider}.sh "experiments/${1}/$exp_json" || echo "Warning: ${provider}.sh failed" | chalk yellow
+    else
+        echo "Warning: ${SCRIPT_DIR}/logs/${provider}.sh not found" | chalk yellow
+    fi
 done
 
 # obtain artillery logs
