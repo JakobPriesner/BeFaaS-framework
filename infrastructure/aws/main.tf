@@ -103,6 +103,7 @@ resource "aws_lambda_function" "fn" {
   environment {
     variables = merge({
       BEFAAS_DEPLOYMENT_ID  = local.deployment_id
+      BEFAAS_FN_NAME        = each.key
       COGNITO_USER_POOL_ID  = aws_cognito_user_pool.main.id
       COGNITO_CLIENT_ID     = aws_cognito_user_pool_client.main.id
     }, var.fn_env)

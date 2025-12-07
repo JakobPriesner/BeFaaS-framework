@@ -1,0 +1,150 @@
+# Auth-Heavy Stress Test Workload
+# Goal: Measure concurrent authentication overhead and scaling
+# Focus: Primarily register and login endpoints
+# Duration: ~10 minutes, ramping from 10 to 500 flows/sec
+config:
+  target: ' '
+  phases:
+    # Warm-up phase
+    - duration: 30
+      arrivalRate: 3
+    # Ramp phase 1: 10 -> 100
+    - duration: 60
+      arrivalRate: 10
+      rampTo: 50
+    # Sustained max load
+    - duration: 180
+      arrivalRate: 50
+  processor: '{{ $processEnvironment.PROCESSOR_DIR }}/logger.js'
+
+  payload:
+    path: 'users.csv'
+    fields:
+      - 'userName'
+      - 'name'
+      - 'password'
+  variables:
+    product:
+      - 'QWERTY'
+      - 'EASYSTOOL'
+      - 'REFLECTXXX'
+scenarios:
+  # Pure login flow - validates credentials
+  - flow:
+      - get:
+          url: '{{ frontend }}/'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - function: 'setNeedsRegistration'
+      - post:
+          url: '{{ frontend }}/register'
+          name: 'register'
+          ifTrue: 'needsRegistration'
+          followRedirect: false
+          form:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          beforeRequest: 'beforeRegister'
+          afterResponse: 'afterRegister'
+      - post:
+          url: '{{ frontend }}/setUser'
+          name: 'login'
+          followRedirect: false
+          form:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+    name: 'login only'
+    weight: 1
+
+  # Register + Login + Multiple items checkout flow
+  # Tests auth validation on each request
+  - flow:
+      - get:
+          url: '{{ frontend }}/'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - function: 'setNeedsRegistration'
+      - post:
+          url: '{{ frontend }}/register'
+          name: 'register'
+          ifTrue: 'needsRegistration'
+          followRedirect: false
+          form:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          beforeRequest: 'beforeRegister'
+          afterResponse: 'afterRegister'
+      - post:
+          url: '{{ frontend }}/setUser'
+          name: 'login'
+          followRedirect: false
+          form:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      # Multiple requests after login to measure auth check overhead
+      - get:
+          url: '{{ frontend }}/'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - get:
+          url: '{{ frontend }}/product/{{product}}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - post:
+          url: '{{ frontend }}/addCartItem'
+          followRedirect: false
+          form:
+            productId: '{{ product }}'
+            quantity: 3
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - get:
+          url: '{{ frontend }}/product/{{product}}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - post:
+          url: '{{ frontend }}/addCartItem'
+          followRedirect: false
+          form:
+            productId: '{{ product }}'
+            quantity: 1
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - get:
+          url: '{{ frontend }}/product/{{product}}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - post:
+          url: '{{ frontend }}/addCartItem'
+          followRedirect: false
+          form:
+            productId: '{{ product }}'
+            quantity: 4
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - get:
+          url: '{{ frontend }}/cart'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - post:
+          url: '{{ frontend }}/checkout'
+          followRedirect: false
+          form:
+            email: 'blubb@blubbmail.com'
+            street_address: 'awesome street'
+            zip_code: '12362'
+            city: 'nope city'
+            state: 'NY'
+            country: 'Germany GmbH'
+            credit_card_number: '4432-8015-6152-0454'
+            credit_card_expiration_month: '1'
+            credit_card_expiration_year: '2021'
+            credit_card_cvv: '123'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+    name: 'auth with multiple requests'
+    weight: 3

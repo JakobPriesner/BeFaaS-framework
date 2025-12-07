@@ -17,13 +17,14 @@ const {
   checkHealth,
   cleanupBuildArtifacts,
   uploadResultsToS3,
+  deleteLocalResults,
   setupLogging
 } = require('./experiment/utils');
 
 /**
  * Run a single benchmark phase including benchmark execution, metrics collection, and analysis
  * @param {Object} config - Experiment configuration
- * @param {string} phaseName - Name of the benchmark phase (e.g., 'baseline', 'stress-ramp', 'stress-auth')
+ * @param {string} phaseName - Name of the benchmark phase (e.g., 'baseline', 'stress-auth')
  * @param {string} workload - Workload file to use
  * @param {string} phaseOutputDir - Output directory for this phase
  * @returns {number} - Start timestamp for this phase
@@ -222,8 +223,9 @@ async function main() {
   console.log(`  Auth Strategy: ${config.auth}`);
   console.log(`  Lambda Memory: ${config.memory} MB`);
   console.log(`  Workload: ${config.workload}`);
-  console.log(`  Stress Test: ${config.stressTest ? 'enabled' : 'disabled'}`);
-  if (config.stressTest) {
+  console.log(`  Scaling Test: ${config.scaling ? 'enabled' : 'disabled'}`);
+  console.log(`  Stress Auth Test: ${config.stressAuth ? 'enabled' : 'disabled'}`);
+  if (config.scaling || config.stressAuth) {
     console.log(`  Scale Down Wait: ${config.scaleDownWait}s`);
   }
   console.log(`  Output Directory: ${config.outputDir}`);
@@ -239,96 +241,79 @@ async function main() {
     installTerraformProviders();
 
     // Step 1: Cleanup and destroy existing infrastructure
-    if (!config.deployOnly) {
-      cleanupBuildArtifacts(config.experiment, config.architecture);
+    cleanupBuildArtifacts(config.experiment, config.architecture);
 
-      try {
-        await runDestroy(config.experiment, config.architecture);
-      } catch (error) {
-        console.log('No existing infrastructure to destroy or destroy failed:', error.message);
-      }
-    }
-
-    // If destroy-only, just destroy and exit
-    if (config.destroyOnly) {
+    try {
       await runDestroy(config.experiment, config.architecture);
-      cleanupBuildArtifacts(config.experiment, config.architecture);
-      logSection('Infrastructure Destroyed and Cleaned Up');
-      return;
+    } catch (error) {
+      console.log('No existing infrastructure to destroy or destroy failed:', error.message);
     }
 
     // Step 2: Build
-    if (!config.deployOnly) {
-      buildDir = await runBuild(config.experiment, config.architecture, config.auth, config.bundleMode);
-    }
+    buildDir = await runBuild(config.experiment, config.architecture, config.auth, config.bundleMode);
 
     // Step 3: Deploy
-    let endpoints = [];
-    if (!config.buildOnly) {
-      if (!buildDir) {
-        buildDir = path.join(__dirname, '..', 'experiments', config.experiment, 'architectures', config.architecture, '_build');
-      }
+    // Record experiment start time (in milliseconds for AWS CloudWatch)
+    // Subtract 1 minute buffer to ensure we capture initialization logs
+    experimentStartTime = Date.now() - 60000;
 
-      // Record experiment start time (in milliseconds for AWS CloudWatch)
-      // Subtract 1 minute buffer to ensure we capture initialization logs
-      experimentStartTime = Date.now() - 60000;
+    // Write timestamp to file for reference
+    const timestampFile = path.join(config.outputDir, 'experiment_start_time.txt');
+    fs.writeFileSync(timestampFile, `${experimentStartTime}\n${new Date(experimentStartTime).toISOString()}`);
+    console.log(`Experiment start time recorded: ${new Date(experimentStartTime).toISOString()}`);
 
-      // Write timestamp to file for reference
-      const timestampFile = path.join(config.outputDir, 'experiment_start_time.txt');
-      fs.writeFileSync(timestampFile, `${experimentStartTime}\n${new Date(experimentStartTime).toISOString()}`);
-      console.log(`Experiment start time recorded: ${new Date(experimentStartTime).toISOString()}`);
+    const endpoints = await runDeploy(config.experiment, config.architecture, buildDir);
 
-      endpoints = await runDeploy(config.experiment, config.architecture, buildDir);
+    // Wait for deployment to stabilize
+    const isEcsBased = config.architecture === 'monolith' || config.architecture === 'microservices';
+    const stabilizationDelay = isEcsBased ? 180000 : 5000; // 3 min for ecs, 5s for Lambda
+    const healthCheckRetries = 120;
+    const healthCheckDelay = isEcsBased ? 30000 : 3000; // 30s for ecs, 3s for Lambda
 
-      // Wait for deployment to stabilize
-      const isEcsBased = config.architecture === 'monolith' || config.architecture === 'microservices';
-      const isMicroservices = config.architecture === 'microservices';
-      const stabilizationDelay = isEcsBased ? 180000 : 5000; // 3 min for ecs, 5s for Lambda
-      const healthCheckRetries = 120;
-      const healthCheckDelay = isEcsBased ? 30000 : 3000; // 30ss for ecs, 3s for Lambda
+    console.log(`\nWaiting for deployment to stabilize (${stabilizationDelay / 1000}s)...`);
+    await new Promise(resolve => setTimeout(resolve, stabilizationDelay));
 
-      console.log(`\nWaiting for deployment to stabilize (${stabilizationDelay / 1000}s)...`);
-      await new Promise(resolve => setTimeout(resolve, stabilizationDelay));
-
-      // Health check
-      const isHealthy = await checkHealth(endpoints, healthCheckRetries, healthCheckDelay);
-      if (!isHealthy) {
-        throw new Error('Deployment failed health check');
-      }
+    // Health check
+    const isHealthy = await checkHealth(endpoints, healthCheckRetries, healthCheckDelay);
+    if (!isHealthy) {
+      throw new Error('Deployment failed health check');
     }
 
     // Step 4-7: Run Benchmark Phases
-    if (!config.buildOnly && !config.skipBenchmark) {
-      if (config.stressTest) {
-        // Multi-phase benchmark with stress tests
-        logSection('Multi-Phase Benchmark Mode');
-        console.log('Running baseline benchmark followed by stress tests...\n');
+    if (!config.skipBenchmark) {
+      const isMultiPhase = config.scaling || config.stressAuth;
 
-        // Phase 1: Baseline benchmark (using configured workload)
+      if (isMultiPhase) {
+        // Multi-phase benchmark mode
+        const enabledPhases = ['baseline'];
+        if (config.scaling) enabledPhases.push('scaling');
+        if (config.stressAuth) enabledPhases.push('stress-auth');
+
+        logSection('Multi-Phase Benchmark Mode');
+        console.log(`Running phases: ${enabledPhases.join(', ')}\n`);
+
+        // Phase 1: Baseline benchmark (always runs, using configured workload)
         const baselineOutputDir = path.join(config.outputDir, 'baseline');
         await runBenchmarkPhase(config, 'Baseline', config.workload, baselineOutputDir);
 
-        // Wait for scale down
-        await waitForScaleDown(config.scaleDownWait);
+        // Phase 2: Scaling benchmark (if enabled)
+        if (config.scaling) {
+          await waitForScaleDown(config.scaleDownWait);
+          const scalingOutputDir = path.join(config.outputDir, 'scaling');
+          await runBenchmarkPhase(config, 'Scaling', 'workload-scaling.yml', scalingOutputDir);
+        }
 
-        // Phase 2: Stress Ramp benchmark
-        const stressRampOutputDir = path.join(config.outputDir, 'stress-ramp');
-        await runBenchmarkPhase(config, 'Stress Ramp', 'workload-stress-ramp.yml', stressRampOutputDir);
-
-        // Wait for scale down
-        await waitForScaleDown(config.scaleDownWait);
-
-        // Phase 3: Stress Auth benchmark
-        const stressAuthOutputDir = path.join(config.outputDir, 'stress-auth');
-        await runBenchmarkPhase(config, 'Stress Auth', 'workload-stress-auth.yml', stressAuthOutputDir);
-
-        // Define phases for insights combination
-        const phases = ['baseline', 'stress-ramp', 'stress-auth'];
+        // Phase 3: Stress Auth benchmark (if enabled)
+        if (config.stressAuth) {
+          await waitForScaleDown(config.scaleDownWait);
+          const stressAuthOutputDir = path.join(config.outputDir, 'stress-auth');
+          await runBenchmarkPhase(config, 'Stress Auth', 'workload-stress-auth.yml', stressAuthOutputDir);
+        }
 
         // Write summary of all phases
         const summaryFile = path.join(config.outputDir, 'benchmark_summary.json');
         const summary = {
-          phases: phases,
+          phases: enabledPhases,
           baselineWorkload: config.workload,
           architecture: config.architecture,
           auth: config.auth,
@@ -340,10 +325,10 @@ async function main() {
         console.log(`\nBenchmark summary written to: ${summaryFile}`);
 
         // Combine insights from all phases into a single insights.json
-        combinePhaseInsights(config.outputDir, phases, config);
+        combinePhaseInsights(config.outputDir, enabledPhases, config);
 
       } else {
-        // Single-phase benchmark (original behavior)
+        // Single-phase benchmark (original behavior - baseline only)
         await resetCognitoUserPool();
         await runBenchmark(config.experiment, config.workload, config.outputDir);
 
@@ -356,25 +341,22 @@ async function main() {
     }
 
     // Step 8: Destroy infrastructure if requested
-    if (config.destroy && !config.buildOnly) {
+    if (config.destroy) {
       await runDestroy(config.experiment, config.architecture);
       cleanupBuildArtifacts(config.experiment, config.architecture);
     }
 
     // Step 9: Upload results to S3
-    if (!config.buildOnly) {
-      const uploadSuccess = await uploadResultsToS3(
-        config.outputDir,
-        config.experiment,
-        config.architecture,
-        config.auth
-      );
+    const uploadSuccess = await uploadResultsToS3(
+      config.outputDir,
+      config.experiment,
+      config.architecture,
+      config.auth
+    );
 
-      // Step 10: Delete local results after successful upload
-      // TODO: Uncomment the following lines when ready to enable local file deletion
-      // if (uploadSuccess) {
-      //   deleteLocalResults(config.outputDir);
-      // }
+    // Step 10: Delete local results after successful upload
+    if (uploadSuccess) {
+      deleteLocalResults(config.outputDir);
     }
 
     logSection('Experiment Complete');

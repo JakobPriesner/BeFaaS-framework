@@ -26,8 +26,10 @@ function logAuthTiming(contextId, durationMs, success) {
 
 async function verifyJWT(event, contextId) {
   const startTime = performance.now();
+  // Use 'unknown' as fallback contextId to ensure auth timing is always logged
+  const logContextId = contextId || 'unknown';
   const duration = performance.now() - startTime;
-  logAuthTiming(contextId, duration, true);
+  logAuthTiming(logContextId, duration, true);
   return true;
 }
 

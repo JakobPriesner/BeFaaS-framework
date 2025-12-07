@@ -29,13 +29,15 @@ function logAuthTiming(contextId, durationMs, success) {
 
 async function verifyJWT(event, contextId) {
   const startTime = performance.now();
+  // Use 'unknown' as fallback contextId to ensure auth timing is always logged
+  const logContextId = contextId || 'unknown';
 
   try {
     const authHeader = event.headers?.authorization || event.headers?.Authorization;
 
     if (!authHeader) {
       const duration = performance.now() - startTime;
-      logAuthTiming(contextId, duration, false);
+      logAuthTiming(logContextId, duration, false);
       return false;
     }
 
@@ -50,12 +52,12 @@ async function verifyJWT(event, contextId) {
     const payload = await verifier.verify(token);
 
     const duration = performance.now() - startTime;
-    logAuthTiming(contextId, duration, true);
+    logAuthTiming(logContextId, duration, true);
 
     return payload;
   } catch (err) {
     const duration = performance.now() - startTime;
-    logAuthTiming(contextId, duration, false);
+    logAuthTiming(logContextId, duration, false);
     console.error('Error verifying JWT:', err);
     return false;
   }

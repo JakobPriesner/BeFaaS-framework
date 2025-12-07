@@ -7,22 +7,20 @@ Usage: node scripts/experiment.js --architecture <arch> --auth <auth> [options]
 
 Required:
   --architecture, -a    Architecture to deploy (faas, microservices, monolith)
-  --auth, -u           Authentication strategy (none, service-integrated)
+  --auth, -u           Authentication strategy (none, service-integrated, service-integrated-manual)
 
 Optional:
   --experiment, -e     Experiment to run (default: webservice)
                        Available: iot, smartFactory, streaming, test, topics, webservice
   --memory             AWS Lambda memory in MB (default: 512, range: 128-10240)
-  --build-only         Only build, don't deploy
-  --deploy-only        Only deploy (skip build)
   --keep-infra         Keep infrastructure running after experiment (default: destroy)
-  --destroy-only       Only destroy infrastructure (skip build, deploy, benchmark)
   --skip-benchmark     Skip benchmark execution
   --skip-metrics       Skip metrics collection
   --workload           Workload file (default: workload-constant.yml)
   --bundle-mode        FaaS only: 'all' (all functions) or 'minimal' (only needed) (default: minimal)
   --output-dir         Output directory for results (default: ./results/<experiment>/<arch>#<auth>#<mem>#<bundle>#<timestamp>)
-  --stress-test        Run stress tests after initial benchmark (stress-ramp and stress-auth workloads)
+  --scaling            Run scaling benchmark after baseline (tests system under increasing load)
+  --stress-auth        Run stress-auth benchmark (tests auth endpoints under load)
   --scale-down-wait    Seconds to wait between benchmark phases for scale-down (default: 300)
   --help, -h           Show this help message
 
@@ -30,20 +28,20 @@ Examples:
   # Full experiment run (infra auto-destroyed at the end)
   node scripts/experiment.js -a faas -u none
 
-  # Run with stress tests (baseline + stress-ramp + stress-auth)
-  node scripts/experiment.js -a faas -u service-integrated --stress-test
+  # Run with scaling test (baseline + scaling)
+  node scripts/experiment.js -a faas -u service-integrated --scaling
+
+  # Run with stress-auth test (baseline + stress-auth)
+  node scripts/experiment.js -a faas -u service-integrated --stress-auth
+
+  # Run with both (baseline + scaling + stress-auth)
+  node scripts/experiment.js -a faas -u service-integrated --scaling --stress-auth
 
   # Run with custom Lambda memory configuration
   node scripts/experiment.js -a faas -u none --memory 1024
 
   # Keep infrastructure running after experiment (for debugging)
   node scripts/experiment.js -a faas -u none --keep-infra
-
-  # Only build monolith architecture for IoT experiment
-  node scripts/experiment.js -e iot -a monolith -u none --build-only
-
-  # Only destroy existing infrastructure
-  node scripts/experiment.js -a microservices -u service-integrated --destroy-only
 `);
 }
 
@@ -52,17 +50,15 @@ function parseArgs(args) {
     experiment: 'webservice',
     architecture: null,
     auth: null,
-    buildOnly: false,
-    deployOnly: false,
     destroy: true,  // Default: destroy infrastructure after experiment
-    destroyOnly: false,
     skipBenchmark: false,
     skipMetrics: false,
     workload: 'workload-constant.yml',
     outputDir: null,
     memory: 512,
     bundleMode: 'minimal',
-    stressTest: false,
+    scaling: false,
+    stressAuth: false,
     scaleDownWait: 300 // seconds to wait between benchmark phases for scale-down
   };
 
@@ -87,20 +83,11 @@ function parseArgs(args) {
       case '-u':
         config.auth = args[++i];
         break;
-      case '--build-only':
-        config.buildOnly = true;
-        break;
-      case '--deploy-only':
-        config.deployOnly = true;
-        break;
       case '--destroy':
         config.destroy = true;
         break;
       case '--keep-infra':
         config.destroy = false;
-        break;
-      case '--destroy-only':
-        config.destroyOnly = true;
         break;
       case '--skip-benchmark':
         config.skipBenchmark = true;
@@ -120,8 +107,11 @@ function parseArgs(args) {
       case '--bundle-mode':
         config.bundleMode = args[++i];
         break;
-      case '--stress-test':
-        config.stressTest = true;
+      case '--scaling':
+        config.scaling = true;
+        break;
+      case '--stress-auth':
+        config.stressAuth = true;
         break;
       case '--scale-down-wait':
         config.scaleDownWait = parseInt(args[++i]);
@@ -158,7 +148,7 @@ function validateConfig(config) {
   }
 
   // Validate auth
-  const validAuth = ['none', 'service-integrated'];
+  const validAuth = ['none', 'service-integrated', 'service-integrated-manual'];
   if (!validAuth.includes(config.auth)) {
     console.error(`Error: Invalid auth strategy. Must be one of: ${validAuth.join(', ')}`);
     process.exit(1);

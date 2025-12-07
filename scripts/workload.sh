@@ -25,10 +25,15 @@ fi
 
 exp_json="${exp_dir}/${exp_json}"
 
-workload_config_name=$(jq -r '.services.workload.config' "$exp_json")
-if [ "$workload_config_name" == "null" ]; then
-    echo -e "Workload config not defined (services.workload.config)\n" | chalk red
-    exit 1
+# Third parameter: optional workload file override
+if [[ -n "${3:-}" ]]; then
+    workload_config_name="$3"
+else
+    workload_config_name=$(jq -r '.services.workload.config' "$exp_json")
+    if [ "$workload_config_name" == "null" ]; then
+        echo -e "Workload config not defined (services.workload.config)\n" | chalk red
+        exit 1
+    fi
 fi
 
 workload_config="${exp_dir}/${workload_config_name}"

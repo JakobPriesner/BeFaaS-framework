@@ -25,5 +25,5 @@ variable "memory" {
 variable "desired_count" {
   description = "Number of monolith instances to run"
   type        = number
-  default     = 2
+  default     = 1
 }
