@@ -352,19 +352,11 @@ async function handleSetUser(ctx) {
 
   const authResult = await ctx.call('login', { userName, password })
 
-  if (authResult.success) {
-    emptyCartSize(ctx)
-    storageObj.userName = userName
-    storageObj.userPassword = password || ''
-    storageObj.jwtToken = authResult.accessToken
-    console.log(`User ${userName} authenticated successfully`)
-  } else {
-    console.error(`Failed to authenticate user ${userName}: ${authResult.error}`)
-    emptyCartSize(ctx)
-    storageObj.userName = userName
-    storageObj.userPassword = password || ''
-    storageObj.jwtToken = ''
-  }
+  emptyCartSize(ctx)
+  storageObj.userName = userName
+  storageObj.userPassword = password || ''
+  storageObj.jwtToken = authResult.accessToken
+  console.log(`User ${userName} authenticated successfully`)
 
   ctx.type = 'application/json'
   ctx.response.redirect('back')

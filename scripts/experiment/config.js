@@ -18,7 +18,7 @@ Optional:
   --skip-metrics       Skip metrics collection
   --workload           Workload file (default: workload-constant.yml)
   --bundle-mode        FaaS only: 'all' (all functions) or 'minimal' (only needed) (default: minimal)
-  --output-dir         Output directory for results (default: ./results/<experiment>/<arch>#<auth>#<mem>#<bundle>#<timestamp>)
+  --output-dir         Output directory for results (default: ./results/<experiment>/<arch>_<auth>_<mem>_<bundle>_<timestamp>)
   --scaling            Run scaling benchmark after baseline (tests system under increasing load)
   --stress-auth        Run stress-auth benchmark (tests auth endpoints under load)
   --scale-down-wait    Seconds to wait between benchmark phases for scale-down (default: 300)
@@ -184,16 +184,22 @@ function validateConfig(config) {
     }
   }
 
-  // Set default output directory
-  // Format: <architecture>#<auth>#<memory>#<bundle (faas only)>#<timestamp>
+  // Set default output directory and run_id
+  // Format: <architecture>_<auth>_<memory>_<bundle (faas only)>_<timestamp>
+  // Note: Using underscore as separator since # is not allowed in CloudWatch log group names
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const parts = [config.architecture, config.auth, `${config.memory}MB`];
+  if (config.architecture === 'faas') {
+    parts.push(config.bundleMode);
+  }
+  parts.push(timestamp);
+
+  // Generate run_id (used for CloudWatch log group naming)
+  // CloudWatch log group names allow: a-zA-Z0-9, '_', '-', '/', '.'
+  config.runId = parts.join('_');
+
   if (!config.outputDir) {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const parts = [config.architecture, config.auth, `${config.memory}MB`];
-    if (config.architecture === 'faas') {
-      parts.push(config.bundleMode);
-    }
-    parts.push(timestamp);
-    config.outputDir = path.join('results', config.experiment, parts.join('#'));
+    config.outputDir = path.join('results', config.experiment, config.runId);
   }
 
   return config;

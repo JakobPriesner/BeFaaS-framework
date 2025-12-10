@@ -10,6 +10,7 @@ const { runBuild } = require('./experiment/build');
 const { runDeploy, runDestroy, resetCognitoUserPool } = require('./experiment/deploy');
 const { runBenchmark } = require('./experiment/benchmark');
 const { collectMetrics } = require('./experiment/metrics');
+const { collectCloudWatchMetrics } = require('./experiment/cloudwatch-metrics');
 const { analyzeResults } = require('./experiment/analysis');
 const {
   S3_BUCKET_NAME,
@@ -51,9 +52,15 @@ async function runBenchmarkPhase(config, phaseName, workload, phaseOutputDir) {
   // Run benchmark
   await runBenchmark(config.experiment, workload, phaseOutputDir);
 
+  // Record phase end time (add 1 minute buffer to capture trailing metrics)
+  const phaseEndTime = Date.now() + 60000;
+
   // Collect metrics
   if (!config.skipMetrics) {
     await collectMetrics(config.experiment, phaseOutputDir, phaseStartTime);
+
+    // Collect CloudWatch metrics for ECS/ALB (monolith and microservices only)
+    await collectCloudWatchMetrics(config, phaseOutputDir, phaseStartTime, phaseEndTime);
   }
 
   // Analyze results
@@ -223,6 +230,7 @@ async function main() {
   console.log(`  Auth Strategy: ${config.auth}`);
   console.log(`  Lambda Memory: ${config.memory} MB`);
   console.log(`  Workload: ${config.workload}`);
+  console.log(`  Run ID: ${config.runId}`);
   console.log(`  Scaling Test: ${config.scaling ? 'enabled' : 'disabled'}`);
   console.log(`  Stress Auth Test: ${config.stressAuth ? 'enabled' : 'disabled'}`);
   if (config.scaling || config.stressAuth) {
@@ -261,6 +269,10 @@ async function main() {
     const timestampFile = path.join(config.outputDir, 'experiment_start_time.txt');
     fs.writeFileSync(timestampFile, `${experimentStartTime}\n${new Date(experimentStartTime).toISOString()}`);
     console.log(`Experiment start time recorded: ${new Date(experimentStartTime).toISOString()}`);
+
+    // Set run_id for Terraform (used for CloudWatch log group naming)
+    process.env.TF_VAR_run_id = config.runId;
+    console.log(`Run ID: ${config.runId}`);
 
     const endpoints = await runDeploy(config.experiment, config.architecture, buildDir);
 
@@ -332,8 +344,14 @@ async function main() {
         await resetCognitoUserPool();
         await runBenchmark(config.experiment, config.workload, config.outputDir);
 
+        // Record end time (add 1 minute buffer to capture trailing metrics)
+        const experimentEndTime = Date.now() + 60000;
+
         if (!config.skipMetrics) {
           await collectMetrics(config.experiment, config.outputDir, experimentStartTime);
+
+          // Collect CloudWatch metrics for ECS/ALB (monolith and microservices only)
+          await collectCloudWatchMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
         }
 
         await analyzeResults(config.experiment, config.outputDir);
@@ -356,7 +374,7 @@ async function main() {
 
     // Step 10: Delete local results after successful upload
     if (uploadSuccess) {
-      deleteLocalResults(config.outputDir);
+      // deleteLocalResults(config.outputDir);
     }
 
     logSection('Experiment Complete');
