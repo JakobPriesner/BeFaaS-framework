@@ -31,17 +31,19 @@ if [[ ! -d $exp_dir ]]; then
 fi
 
 cd infrastructure/experiment
-export project_name=$(terraform output -json | jq -r '.project_name.value')
-cd -
-
-cd infrastructure/experiment
-export BEFAAS_DEPLOYMENT_ID=$(terraform output -json | jq -r '.deployment_id.value')
+terraform_output=$(terraform output -json)
+export BEFAAS_PROJECT_NAME=$(echo "$terraform_output" | jq -r '.project_name.value')
+export project_name=$BEFAAS_PROJECT_NAME
+export BEFAAS_DEPLOYMENT_ID=$(echo "$terraform_output" | jq -r '.deployment_id.value')
+export BEFAAS_RUN_ID=$(echo "$terraform_output" | jq -r '.run_id.value // empty')
 cd -
 
 export logdir=logs/$1/$(date +%Y-%m-%d_%H-%M-%S)
 mkdir -p $logdir
 
+echo "Project Name: $BEFAAS_PROJECT_NAME" | chalk blue
 echo "Deployment ID: $BEFAAS_DEPLOYMENT_ID" | chalk blue
+echo "Run ID: ${BEFAAS_RUN_ID:-not set}" | chalk blue
 echo "Log directory: $logdir" | chalk blue
 echo "AWS_REGION: ${AWS_REGION:-not set}" | chalk blue
 

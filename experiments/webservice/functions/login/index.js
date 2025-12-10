@@ -6,7 +6,6 @@ const cognitoClient = new CognitoIdentityProviderClient({
 })
 
 const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID
-const COGNITO_CLIENT_SECRET = process.env.COGNITO_CLIENT_SECRET
 
 /**
  * Login Service authenticates a user against Cognito and returns JWT tokens.
@@ -41,16 +40,6 @@ async function handle(event, ctx) {
       PASSWORD: password
     }
 
-    // Only include SECRET_HASH if client secret is configured
-    if (COGNITO_CLIENT_SECRET) {
-      const crypto = require('crypto')
-      const secretHash = crypto
-        .createHmac('SHA256', COGNITO_CLIENT_SECRET)
-        .update(userName + COGNITO_CLIENT_ID)
-        .digest('base64')
-      authParameters.SECRET_HASH = secretHash
-    }
-
     const command = new InitiateAuthCommand({
       AuthFlow: 'USER_PASSWORD_AUTH',
       ClientId: COGNITO_CLIENT_ID,
@@ -60,7 +49,6 @@ async function handle(event, ctx) {
     const response = await cognitoClient.send(command)
 
     return {
-      success: true,
       accessToken: response.AuthenticationResult.AccessToken,
       idToken: response.AuthenticationResult.IdToken,
       refreshToken: response.AuthenticationResult.RefreshToken

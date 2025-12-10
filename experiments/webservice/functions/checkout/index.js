@@ -97,7 +97,7 @@ function scalePrice (price, scalar) {
 
 async function handle (event, ctx) {
   // Verify JWT token
-  const isValid = await verifyJWT(event, ctx.contextId)
+  const isValid = await verifyJWT(event, ctx.contextId, ctx.xPair)
 
   if (!isValid) {
     return { error: 'Unauthorized' }

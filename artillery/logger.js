@@ -10,9 +10,6 @@ const deploymentId =
 
 const fnName = 'artillery'
 
-// Track registered users to avoid duplicate registration attempts
-const registeredUsers = new Set()
-
 // This is a workaround to artillery not resolving variables before the beforeRequest callback
 // this results in the url field being {{ functionName }} instead of the actual url
 function resolveVar(url, context) {
@@ -47,32 +44,25 @@ function beforeRequest(requestParams, context, ee, next) {
   const url = resolveVar(requestParams.url, context)
   const contextId = lib.helper.generateRandomID()
   const xPair = `${contextId}-${lib.helper.generateRandomID()}`
-  // Preserve existing headers (including cookies) instead of resetting them
-  requestParams.headers = requestParams.headers || {}
+  requestParams.headers = {}
   requestParams.headers['x-context'] = contextId
   requestParams.headers['x-pair'] = xPair
+
+  if (context.vars.accessToken) {
+    requestParams.headers.Authorization = `Bearer ${context.vars.accessToken}`
+  }
+
   logEvent({ url, contextId, xPair, type: 'before' })
   return next()
 }
 
 function afterResponse(requestParams, response, context, ee, next) {
-  const event = {
+  logEvent({
     url: requestParams.url,
     contextId: requestParams.headers['x-context'],
     xPair: requestParams.headers['x-pair'],
     type: 'after'
-  }
-
-  // Add response validation logging when ARTILLERY_VALIDATION_MODE is enabled
-  if (process.env.ARTILLERY_VALIDATION_MODE === 'true') {
-    event.response = {
-      statusCode: response.statusCode,
-      statusMessage: response.statusMessage,
-      bodyPreview: response.body ? response.body.substring(0, 50) : null // First 50 chars
-    }
-  }
-
-  logEvent(event)
+  })
 
   return next()
 }
@@ -131,47 +121,11 @@ function emergencyEveryTwoMinutesFiveSecondsEach(requestParams, context, ee, nex
   return beforeRequest(requestParams, context, ee, next);
 }
 
-// Conditional registration: only register if user not already registered
-function beforeRegister(requestParams, context, ee, next) {
-  const userName = context.vars.userName
-
-  if (registeredUsers.has(userName)) {
-    // User already registered - mark to skip and just do login
-    context.vars._skipRegister = true
-    // Change to a no-op by redirecting to frontend (GET request effectively)
-    // We'll handle this by making the register a no-op in the response
-  }
-
-  return beforeRequest(requestParams, context, ee, next)
-}
-
-// After registration: mark user as registered
-function afterRegister(requestParams, response, context, ee, next) {
-  const userName = context.vars.userName
-
-  // If registration succeeded (302 redirect) or user was newly created, mark as registered
-  if (response.statusCode === 302 || response.statusCode === 200) {
-    registeredUsers.add(userName)
-  }
-
-  return afterResponse(requestParams, response, context, ee, next)
-}
-
-// Check if user needs registration (for use with Artillery's ifTrue)
-function setNeedsRegistration(context, ee, next) {
-  const userName = context.vars.userName
-  context.vars.needsRegistration = !registeredUsers.has(userName)
-  return next()
-}
-
 module.exports = {
   beforeRequest,
   afterResponse,
   singleEmergency,
   emergencyEveryTwoMinutesFiveSecondsEach,
   emergencyNever,
-  emergencyScaling,
-  beforeRegister,
-  afterRegister,
-  setNeedsRegistration
+  emergencyScaling
 }

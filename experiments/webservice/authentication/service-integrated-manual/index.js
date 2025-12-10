@@ -6,7 +6,7 @@ const fnName = process.env.BEFAAS_FN_NAME || 'unknownFn'
 const deploymentId = process.env.BEFAAS_DEPLOYMENT_ID || 'unknownDeploymentId'
 
 // Log auth timing in BEFAAS format
-function logAuthTiming(contextId, durationMs, success) {
+function logAuthTiming(contextId, xPair, durationMs, success) {
   process.stdout.write(
     'BEFAAS' +
       JSON.stringify({
@@ -16,6 +16,7 @@ function logAuthTiming(contextId, durationMs, success) {
         fn: { name: fnName },
         event: {
           contextId,
+          xPair,
           authCheck: {
             durationMs,
             success
@@ -31,20 +32,22 @@ function logAuthTiming(contextId, durationMs, success) {
  * Uses manual JWT verification with jsonwebtoken library.
  *
  * @param {Object} event - The event object containing headers
- * @param {string} contextId - The context ID for logging (optional)
+ * @param {string} contextId - The context ID for logging (session ID)
+ * @param {string} xPair - The xPair ID for request/response correlation
  * @returns {Object|false} - Returns the decoded payload if valid, false otherwise
  */
-async function verifyJWT(event, contextId) {
+async function verifyJWT(event, contextId, xPair) {
   const startTime = performance.now()
-  // Use 'unknown' as fallback contextId to ensure auth timing is always logged
+  // Use 'unknown' as fallback to ensure auth timing is always logged
   const logContextId = contextId || 'unknown'
+  const logXPair = xPair || 'unknown'
 
   try {
     const authHeader = event.headers?.authorization || event.headers?.Authorization
 
     if (!authHeader) {
       const duration = performance.now() - startTime
-      logAuthTiming(logContextId, duration, false)
+      logAuthTiming(logContextId, logXPair, duration, false)
       return false
     }
 
@@ -56,12 +59,12 @@ async function verifyJWT(event, contextId) {
     })
 
     const duration = performance.now() - startTime
-    logAuthTiming(logContextId, duration, true)
+    logAuthTiming(logContextId, logXPair, duration, true)
 
     return payload
   } catch (err) {
     const duration = performance.now() - startTime
-    logAuthTiming(logContextId, duration, false)
+    logAuthTiming(logContextId, logXPair, duration, false)
     console.error('Error verifying JWT:', err.message)
     return false
   }

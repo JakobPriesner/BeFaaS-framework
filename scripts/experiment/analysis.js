@@ -4,11 +4,91 @@ const { execSync } = require('child_process');
 const { logSection } = require('./utils');
 
 /**
- * Sanitize log files by removing malformed JSON entries
- * This prevents the befaas/analysis container from crashing on truncated logs
- * @param {string} logsDir - Directory containing log files
- * @returns {number} - Number of malformed entries removed
+ * Parse BEFAAS entries from artillery.log
+ * Format: Lines containing "BEFAAS{...json...}"
+ * @param {string} filePath - Path to artillery.log
+ * @returns {Array} - Array of parsed entries in dump.json format
  */
+function parseArtilleryLog(filePath) {
+  const entries = [];
+  if (!fs.existsSync(filePath)) return entries;
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split('\n');
+
+  for (const line of lines) {
+    const match = line.match(/BEFAAS(\{.*\})\s*$/);
+    if (match) {
+      try {
+        const data = JSON.parse(match[1]);
+        const ts = data.timestamp;
+        let dt = null;
+        if (ts) {
+          const date = new Date(ts);
+          dt = date.toISOString().replace('Z', '');
+        }
+        entries.push({
+          __logentry__: {
+            timestamp: dt ? { __datetime__: dt } : {},
+            data: data,
+            platform: 'artillery'
+          }
+        });
+      } catch (e) {
+        // Skip malformed entries
+      }
+    }
+  }
+  return entries;
+}
+
+/**
+ * Parse BEFAAS entries from aws.log (CloudWatch format)
+ * Format: {"timestamp":..., "message":"BEFAAS{...}", "ingestionTime":...}
+ * @param {string} filePath - Path to aws.log
+ * @returns {Array} - Array of parsed entries in dump.json format
+ */
+function parseAwsLog(filePath) {
+  const entries = [];
+  if (!fs.existsSync(filePath)) return entries;
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    try {
+      // Parse CloudWatch log entry
+      const logEntry = JSON.parse(trimmed);
+      const message = logEntry.message || '';
+
+      // Look for BEFAAS prefix in message
+      const match = message.match(/BEFAAS(\{.*\})/);
+      if (match) {
+        const data = JSON.parse(match[1]);
+        const ts = data.timestamp || logEntry.timestamp;
+        let dt = null;
+        if (ts) {
+          const date = new Date(ts);
+          dt = date.toISOString().replace('Z', '');
+        }
+        entries.push({
+          __logentry__: {
+            timestamp: dt ? { __datetime__: dt } : {},
+            data: data,
+            platform: 'aws'
+          }
+        });
+      }
+    } catch (e) {
+      // Skip malformed entries
+    }
+  }
+  return entries;
+}
+
 function sanitizeLogs(logsDir) {
   let totalRemoved = 0;
   const logFiles = fs.readdirSync(logsDir).filter(f => f.endsWith('.log') || f.endsWith('.json'));
@@ -97,9 +177,43 @@ async function analyzeResults(experiment, outputDir) {
     });
 
     const dumpFile = path.join(analysisDir, 'dump.json');
+
+    // Check if dump.json was created and has content
+    let needsFallback = false;
     if (!fs.existsSync(dumpFile)) {
-      console.log('dump.json not created, skipping further analysis');
-      return;
+      console.log('dump.json not created by container');
+      needsFallback = true;
+    } else {
+      const dumpContent = fs.readFileSync(dumpFile, 'utf8').trim();
+      if (dumpContent === '[]' || dumpContent === '{}' || dumpContent.length < 10) {
+        console.log('dump.json is empty, using fallback parser');
+        needsFallback = true;
+      }
+    }
+
+    // Fallback: Parse log files directly if container didn't produce results
+    if (needsFallback) {
+      console.log('\nStep 1b: Using fallback parser for log files...');
+      const artilleryLog = path.join(absoluteLogsDir, 'artillery.log');
+      const awsLog = path.join(absoluteLogsDir, 'aws.log');
+
+      // Parse both artillery.log and aws.log
+      const artilleryEntries = parseArtilleryLog(artilleryLog);
+      const awsEntries = parseAwsLog(awsLog);
+
+      console.log(`  Parsed ${artilleryEntries.length} entries from artillery.log`);
+      console.log(`  Parsed ${awsEntries.length} entries from aws.log`);
+
+      // Merge entries from both sources
+      const entries = [...artilleryEntries, ...awsEntries];
+
+      if (entries.length > 0) {
+        fs.writeFileSync(dumpFile, JSON.stringify(entries));
+        console.log(`  Total: ${entries.length} entries merged into dump.json`);
+      } else {
+        console.log('  No valid entries found in log files, skipping further analysis');
+        return;
+      }
     }
 
     console.log('dump.json generated successfully');

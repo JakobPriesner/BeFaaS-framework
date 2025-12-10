@@ -6,7 +6,8 @@
   "dependencies": {
     "@befaas/lib": "*",
     "aws-jwt-verify": "^4.0.1",
-    "card-validator": "^8.1.1"
+    "card-validator": "^8.1.1",
+    "jsonwebtoken": "^9.0.2"
   },
   "scripts": {
     "start": "node index.js"

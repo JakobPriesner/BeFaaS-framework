@@ -76,7 +76,25 @@ async function runDestroy(experiment, architecture) {
   }
 }
 
-async function resetCognitoUserPool() {
+/**
+ * Reset Cognito User Pool (disabled by default)
+ *
+ * This function was previously used to recreate the Cognito pool before each benchmark,
+ * but this caused issues with pre-registered users being deleted.
+ *
+ * If you need to reset the Cognito pool, you can:
+ * 1. Use the AWS CLI to delete users: aws cognito-idp admin-delete-user
+ * 2. Destroy and redeploy the infrastructure
+ * 3. Manually taint the Cognito resources in Terraform
+ *
+ * @param {boolean} force - If true, actually reset the pool (default: false)
+ */
+async function resetCognitoUserPool(force = false) {
+  if (!force) {
+    console.log('Skipping Cognito User Pool reset (users are pre-registered)');
+    return;
+  }
+
   logSection('Resetting Cognito User Pool');
 
   const projectRoot = path.join(__dirname, '..', '..');

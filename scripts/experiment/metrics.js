@@ -79,12 +79,13 @@ async function collectMetrics(experiment, outputDir, experimentStartTime) {
 
     // Copy collected logs to output directory
     const logsDir = path.join(projectRoot, 'logs', experiment);
+    const destLogsDir = path.join(outputDir, 'logs');
+
     if (fs.existsSync(logsDir)) {
       // Get the most recent logs directory
       const logDirs = fs.readdirSync(logsDir).sort().reverse();
       if (logDirs.length > 0) {
         const latestLogDir = path.join(logsDir, logDirs[0]);
-        const destLogsDir = path.join(outputDir, 'logs');
 
         console.log(`Copying logs from ${latestLogDir} to ${destLogsDir}`);
 
@@ -102,6 +103,21 @@ async function collectMetrics(experiment, outputDir, experimentStartTime) {
         }
 
         console.log('✓ Logs collected and copied to output directory');
+      }
+    }
+
+    // Also copy workload.log to logs directory if it exists
+    // This contains BEFAAS entries from artillery running on the workload instance
+    const workloadLogSrc = path.join(outputDir, 'workload.log');
+    if (fs.existsSync(workloadLogSrc)) {
+      if (!fs.existsSync(destLogsDir)) {
+        fs.mkdirSync(destLogsDir, { recursive: true });
+      }
+      const artilleryLogDest = path.join(destLogsDir, 'artillery.log');
+      // Only copy if artillery.log is empty or doesn't exist
+      if (!fs.existsSync(artilleryLogDest) || fs.statSync(artilleryLogDest).size === 0) {
+        fs.copyFileSync(workloadLogSrc, artilleryLogDest);
+        console.log('✓ Copied workload.log to logs/artillery.log');
       }
     }
 
