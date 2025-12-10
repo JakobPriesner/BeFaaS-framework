@@ -1,0 +1,74 @@
+# Minimal Auth Test Workload
+# Goal: Quick test to verify auth timing logs are captured
+# Duration: ~30 seconds, very low load
+config:
+  target: ' '
+  phases:
+    # Very short test - just enough to generate logs
+    - duration: 15
+      arrivalRate: 2
+    - duration: 15
+      arrivalRate: 5
+  processor: '{{ $processEnvironment.PROCESSOR_DIR }}/logger.js'
+
+  payload:
+    path: 'users.csv'
+    fields:
+      - 'userName'
+      - 'name'
+      - 'password'
+  variables:
+    product:
+      - 'QWERTY'
+
+scenarios:
+  # Login + Cart + Checkout flow
+  # Exercises multiple functions with auth checks
+  # Users are pre-registered in persistent Cognito pool
+  - flow:
+      - get:
+          url: '{{ frontend }}/'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      - post:
+          url: '{{ frontend }}/setUser'
+          name: 'login'
+          followRedirect: false
+          form:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      # Cart operations - triggers auth in: addcartitem, cartkvstorage
+      - post:
+          url: '{{ frontend }}/addCartItem'
+          followRedirect: false
+          form:
+            productId: '{{ product }}'
+            quantity: 2
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      # Get cart - triggers auth in: getcart, cartkvstorage
+      - get:
+          url: '{{ frontend }}/cart'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+      # Checkout - triggers auth in: checkout, getcart, cartkvstorage, payment, emptycart
+      - post:
+          url: '{{ frontend }}/checkout'
+          followRedirect: false
+          form:
+            email: 'test@test.com'
+            street_address: 'Test Street 1'
+            zip_code: '12345'
+            city: 'Test City'
+            state: 'TS'
+            country: 'Testland'
+            credit_card_number: '4432-8015-6152-0454'
+            credit_card_expiration_month: '1'
+            credit_card_expiration_year: '2025'
+            credit_card_cvv: '123'
+          beforeRequest: 'beforeRequest'
+          afterResponse: 'afterResponse'
+    name: 'auth test flow'
+    weight: 1

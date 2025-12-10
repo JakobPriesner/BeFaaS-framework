@@ -13,11 +13,27 @@ config:
       - 'userName'
       - 'name'
       - 'password'
+    loadAll: true
+
   variables:
     product:
       - 'QWERTY'
       - 'EASYSTOOL'
       - 'REFLECTXXX'
+
+before:
+  flow:
+    - post:
+        url: '{{ login }}'
+        json:
+          userName: '{{ userName }}'
+          password: '{{ password }}'
+        beforeRequest: 'beforeRequest'
+        afterResponse: 'afterResponse'
+        capture:
+          - json: '$.accessToken'
+            as: 'accessToken'
+
 scenarios:
   # Just call frontend
   - flow:
@@ -26,7 +42,7 @@ scenarios:
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
     name: 'just frontend'
-    weight: 5
+    weight: 1
   # Call frontend and browse two products
   - flow:
       - get:
@@ -42,33 +58,11 @@ scenarios:
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
     name: 'frontend with browsing around'
-    weight: 4
-  # frontend, register (if needed), login, and browsing two products
+    weight: 1
+  # frontend, login, and browing two products
   - flow:
       - get:
           url: '{{ frontend }}/'
-          beforeRequest: 'beforeRequest'
-          afterResponse: 'afterResponse'
-      # Check if user needs registration
-      - function: 'setNeedsRegistration'
-      # Register only if not already registered
-      - post:
-          url: '{{ frontend }}/register'
-          name: 'register'
-          ifTrue: 'needsRegistration'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
-          beforeRequest: 'beforeRegister'
-          afterResponse: 'afterRegister'
-      - post:
-          url: '{{ frontend }}/setUser'
-          name: 'login'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
       - get:
@@ -86,32 +80,10 @@ scenarios:
 
     weight: 1
     name: 'frontend with logging in, not buying anything'
-  # frontend, register (if needed), login, browse two products, buy one
+  # frontend, login, browse two products, buy one
   - flow:
       - get:
           url: '{{ frontend }}/'
-          beforeRequest: 'beforeRequest'
-          afterResponse: 'afterResponse'
-      # Check if user needs registration
-      - function: 'setNeedsRegistration'
-      # Register only if not already registered
-      - post:
-          url: '{{ frontend }}/register'
-          name: 'register'
-          ifTrue: 'needsRegistration'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
-          beforeRequest: 'beforeRegister'
-          afterResponse: 'afterRegister'
-      - post:
-          url: '{{ frontend }}/setUser'
-          name: 'login'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
       - get:
@@ -128,7 +100,7 @@ scenarios:
           afterResponse: 'afterResponse'
       - post:
           url: '{{ frontend }}/addCartItem'
-          followRedirect: false
+          followRedirect: true
           form:
             productId: '{{ product }}'
             quantity: 1
@@ -144,7 +116,7 @@ scenarios:
           afterResponse: 'afterResponse'
       - post:
           url: '{{ frontend }}/checkout'
-          followRedirect: false
+          followRedirect: true
           form:
             email: 'blubb@blubbmail.com'
             street_address: 'awesome street'

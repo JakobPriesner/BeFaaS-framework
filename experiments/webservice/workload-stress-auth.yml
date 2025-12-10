@@ -1,6 +1,6 @@
 # Auth-Heavy Stress Test Workload
 # Goal: Measure concurrent authentication overhead and scaling
-# Focus: Primarily register and login endpoints
+# Focus: Primarily login endpoints (users pre-registered in persistent Cognito pool)
 # Duration: ~10 minutes, ramping from 10 to 500 flows/sec
 config:
   target: ' '
@@ -30,22 +30,12 @@ config:
       - 'REFLECTXXX'
 scenarios:
   # Pure login flow - validates credentials
+  # Users are pre-registered in persistent Cognito pool
   - flow:
       - get:
           url: '{{ frontend }}/'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
-      - function: 'setNeedsRegistration'
-      - post:
-          url: '{{ frontend }}/register'
-          name: 'register'
-          ifTrue: 'needsRegistration'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
-          beforeRequest: 'beforeRegister'
-          afterResponse: 'afterRegister'
       - post:
           url: '{{ frontend }}/setUser'
           name: 'login'
@@ -58,24 +48,14 @@ scenarios:
     name: 'login only'
     weight: 1
 
-  # Register + Login + Multiple items checkout flow
+  # Login + Multiple items checkout flow
   # Tests auth validation on each request
+  # Users are pre-registered in persistent Cognito pool
   - flow:
       - get:
           url: '{{ frontend }}/'
           beforeRequest: 'beforeRequest'
           afterResponse: 'afterResponse'
-      - function: 'setNeedsRegistration'
-      - post:
-          url: '{{ frontend }}/register'
-          name: 'register'
-          ifTrue: 'needsRegistration'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
-          beforeRequest: 'beforeRegister'
-          afterResponse: 'afterRegister'
       - post:
           url: '{{ frontend }}/setUser'
           name: 'login'

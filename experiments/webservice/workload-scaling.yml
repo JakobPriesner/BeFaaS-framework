@@ -12,9 +12,6 @@ config:
       arrivalRate: 50
       rampTo: 300
       name: "Heavy load ramp"
-    - duration: 30
-      arrivalRate: 300
-      name: "Peak load"
   processor: '{{ $processEnvironment.PROCESSOR_DIR }}/logger.js'
 
   http:
@@ -33,6 +30,7 @@ config:
       - 'REFLECTXXX'
 scenarios:
   # Pure login flow - validates credentials
+  # Users are pre-registered in persistent Cognito pool
   - flow:
       - get:
           url: '{{ frontend }}/'
@@ -40,19 +38,6 @@ scenarios:
           afterResponse: 'afterResponse'
           expect:
             - statusCode: 200
-      - function: 'setNeedsRegistration'
-      - post:
-          url: '{{ frontend }}/register'
-          name: 'register'
-          ifTrue: 'needsRegistration'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
-          beforeRequest: 'beforeRegister'
-          afterResponse: 'afterRegister'
-          expect:
-            - statusCode: 302
       - post:
           url: '{{ frontend }}/setUser'
           name: 'login'
@@ -67,8 +52,9 @@ scenarios:
     name: 'login only'
     weight: 1
 
-  # Register + Login + Multiple items checkout flow
+  # Login + Multiple items checkout flow
   # Tests auth validation on each request
+  # Users are pre-registered in persistent Cognito pool
   - flow:
       - get:
           url: '{{ frontend }}/'
@@ -76,19 +62,6 @@ scenarios:
           afterResponse: 'afterResponse'
           expect:
             - statusCode: 200
-      - function: 'setNeedsRegistration'
-      - post:
-          url: '{{ frontend }}/register'
-          name: 'register'
-          ifTrue: 'needsRegistration'
-          followRedirect: false
-          form:
-            userName: '{{ userName }}'
-            password: '{{ password }}'
-          beforeRequest: 'beforeRegister'
-          afterResponse: 'afterRegister'
-          expect:
-            - statusCode: 302
       - post:
           url: '{{ frontend }}/setUser'
           name: 'login'
