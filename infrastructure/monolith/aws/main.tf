@@ -22,12 +22,15 @@ data "terraform_remote_state" "exp" {
   }
 }
 
-# Reference VPC state
-data "terraform_remote_state" "vpc" {
-  backend = "local"
+# Use default VPC
+data "aws_vpc" "default" {
+  default = true
+}
 
-  config = {
-    path = "${path.module}/../../services/vpc/terraform.tfstate"
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
   }
 }
 
@@ -41,10 +44,10 @@ data "terraform_remote_state" "redis" {
 }
 
 locals {
-  project_name    = data.terraform_remote_state.exp.outputs.project_name
-  subnet_ids      = data.terraform_remote_state.vpc.outputs.subnet_ids
-  security_groups = data.terraform_remote_state.vpc.outputs.security_groups
-  redis_url       = data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT
+  project_name = data.terraform_remote_state.exp.outputs.project_name
+  subnet_ids   = data.aws_subnets.default.ids
+  vpc_id       = data.aws_vpc.default.id
+  redis_url    = data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT
 }
 
 # Cognito User Pool for authentication
@@ -92,14 +95,6 @@ resource "aws_cognito_user_pool_client" "main" {
   prevent_user_existence_errors = "ENABLED"
 }
 
-# Get VPC ID from subnets
-data "aws_subnet" "first" {
-  id = local.subnet_ids[0]
-}
-
-locals {
-  vpc_id = data.aws_subnet.first.vpc_id
-}
 
 # ECR Repository for monolith
 resource "aws_ecr_repository" "monolith" {
@@ -442,7 +437,7 @@ resource "aws_ecs_service" "monolith" {
 
   network_configuration {
     subnets          = local.subnet_ids
-    security_groups  = concat([aws_security_group.ecs_tasks.id], local.security_groups)
+    security_groups  = [aws_security_group.ecs_tasks.id]
     assign_public_ip = true
   }
 

@@ -22,12 +22,15 @@ data "terraform_remote_state" "exp" {
   }
 }
 
-# Reference VPC state
-data "terraform_remote_state" "vpc" {
-  backend = "local"
+# Use default VPC
+data "aws_vpc" "default" {
+  default = true
+}
 
-  config = {
-    path = "${path.module}/../../services/vpc/terraform.tfstate"
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
   }
 }
 
@@ -41,19 +44,13 @@ data "terraform_remote_state" "redis" {
 }
 
 locals {
-  project_name       = data.terraform_remote_state.exp.outputs.project_name
-  subnet_ids         = data.terraform_remote_state.vpc.outputs.subnet_ids
-  vpc_security_groups = data.terraform_remote_state.vpc.outputs.security_groups
-  redis_url          = data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT
-}
-
-# Get VPC ID from first subnet
-data "aws_subnet" "first" {
-  id = local.subnet_ids[0]
+  project_name = data.terraform_remote_state.exp.outputs.project_name
+  subnet_ids   = data.aws_subnets.default.ids
+  redis_url    = data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT
 }
 
 locals {
-  vpc_id = data.aws_subnet.first.vpc_id
+  vpc_id = data.aws_vpc.default.id
 
   services = {
     "frontend-service" = {
@@ -393,7 +390,7 @@ resource "aws_ecs_service" "service" {
 
   network_configuration {
     subnets          = local.subnet_ids
-    security_groups  = concat([aws_security_group.ecs_tasks.id], local.vpc_security_groups)
+    security_groups  = [aws_security_group.ecs_tasks.id]
     assign_public_ip = true
   }
 

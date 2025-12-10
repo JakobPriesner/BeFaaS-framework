@@ -57,3 +57,23 @@ output "cognito_client_id" {
   description = "Cognito Client ID"
   value       = aws_cognito_user_pool_client.main.id
 }
+
+output "alb_arn" {
+  description = "ARN of the Application Load Balancer"
+  value       = aws_lb.monolith.arn
+}
+
+output "alb_arn_suffix" {
+  description = "ARN suffix of the Application Load Balancer (for CloudWatch metrics)"
+  value       = aws_lb.monolith.arn_suffix
+}
+
+output "target_group_arn_suffix" {
+  description = "ARN suffix of the Target Group (for CloudWatch metrics)"
+  value       = aws_lb_target_group.monolith.arn_suffix
+}
+
+output "service_name" {
+  description = "Name of the ECS service"
+  value       = aws_ecs_service.monolith.name
+}

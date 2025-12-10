@@ -10,6 +10,7 @@ locals {
   project_name  = data.terraform_remote_state.exp.outputs.project_name
   build_id      = data.terraform_remote_state.exp.outputs.build_id
   deployment_id = data.terraform_remote_state.exp.outputs.deployment_id
+  run_id        = data.terraform_remote_state.exp.outputs.run_id
   fns           = data.terraform_remote_state.exp.outputs.aws_fns
   fns_async     = data.terraform_remote_state.exp.outputs.aws_fns_async
 }
@@ -81,7 +82,7 @@ resource "aws_iam_role_policy_attachment" "lambda_exec" {
 
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   for_each          = local.fns
-  name              = "/aws/${local.deployment_id}/${each.key}"
+  name              = "/aws/lambda/${local.run_id}/${each.key}"
   retention_in_days = 7
 }
 
@@ -100,14 +101,22 @@ resource "aws_lambda_function" "fn" {
 
   role = aws_iam_role.lambda_exec.arn
 
+  # Use custom log group per experiment run
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.lambda_logs[each.key].name
+  }
+
   environment {
     variables = merge({
       BEFAAS_DEPLOYMENT_ID  = local.deployment_id
       BEFAAS_FN_NAME        = each.key
-      COGNITO_USER_POOL_ID  = aws_cognito_user_pool.main.id
-      COGNITO_CLIENT_ID     = aws_cognito_user_pool_client.main.id
+      COGNITO_USER_POOL_ID  = local.cognito_user_pool_id
+      COGNITO_CLIENT_ID     = local.cognito_client_id
     }, var.fn_env)
   }
+
+  depends_on = [aws_cloudwatch_log_group.lambda_logs]
 }
 
 resource "aws_lambda_permission" "apigw" {
