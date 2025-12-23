@@ -11,6 +11,40 @@ const axios = require('axios')
 // Get Cloud Map namespace from environment (set by Terraform for AWS)
 const namespace = process.env.CLOUDMAP_NAMESPACE
 
+// Current service identifier (set by each microservice at startup)
+const currentService = process.env.CURRENT_SERVICE || null
+
+// Map functions to their owning service
+const functionToService = {
+  // Cart service
+  'cartkvstorage': 'cart',
+  'getcart': 'cart',
+  'addcartitem': 'cart',
+  'emptycart': 'cart',
+  // Product service
+  'getproduct': 'product',
+  'listproducts': 'product',
+  'searchproducts': 'product',
+  'listrecommendations': 'product',
+  // Order service
+  'checkout': 'order',
+  'payment': 'order',
+  'shiporder': 'order',
+  'shipmentquote': 'order',
+  'email': 'order',
+  // Content service
+  'getads': 'content',
+  'supportedcurrencies': 'content',
+  'currency': 'content',
+  // Frontend service
+  'frontend': 'frontend',
+  'login': 'frontend',
+  'register': 'frontend'
+}
+
+// Registry for local handlers (populated by each service at startup)
+const localHandlers = {}
+
 // Determine if running in AWS or local environment
 const isAWS = namespace && namespace !== 'local'
 
@@ -64,9 +98,29 @@ const functionEndpoints = {
 }
 
 /**
- * Call another microservice via HTTP
+ * Register a local handler for direct invocation within the same service
+ */
+function registerLocalHandler(functionName, handler) {
+  localHandlers[functionName] = handler
+}
+
+/**
+ * Call another microservice via HTTP, or invoke locally if same service
  */
 async function callService(functionName, payload) {
+  const targetService = functionToService[functionName]
+
+  // If the target function is in the same service and has a local handler, call it directly
+  if (currentService && targetService === currentService && localHandlers[functionName]) {
+    try {
+      return await localHandlers[functionName](payload)
+    } catch (error) {
+      console.error(`Error calling local ${functionName}:`, error.message)
+      throw error
+    }
+  }
+
+  // Otherwise, make HTTP call to the remote service
   const endpoint = functionEndpoints[functionName]
   if (!endpoint) {
     throw new Error(`Unknown function: ${functionName}`)
@@ -110,4 +164,4 @@ const lib = {
   })
 }
 
-module.exports = { configureBeFaaSLib, lib, callService }
+module.exports = { configureBeFaaSLib, lib, callService, registerLocalHandler, currentService }
