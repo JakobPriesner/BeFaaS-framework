@@ -109,10 +109,10 @@ resource "aws_lambda_function" "fn" {
 
   environment {
     variables = merge({
-      BEFAAS_DEPLOYMENT_ID  = local.deployment_id
-      BEFAAS_FN_NAME        = each.key
-      COGNITO_USER_POOL_ID  = local.cognito_user_pool_id
-      COGNITO_CLIENT_ID     = local.cognito_client_id
+      BEFAAS_DEPLOYMENT_ID = local.deployment_id
+      BEFAAS_FN_NAME       = each.key
+      COGNITO_USER_POOL_ID = local.cognito_user_pool_id
+      COGNITO_CLIENT_ID    = local.cognito_client_id
     }, var.fn_env)
   }
 
@@ -126,7 +126,7 @@ resource "aws_lambda_permission" "apigw" {
   function_name = aws_lambda_function.fn[each.key].function_name
   principal     = "apigateway.amazonaws.com"
 
-  source_arn = "${data.terraform_remote_state.ep.outputs.aws_api_gateway_rest_api.execution_arn}/*/*"
+  source_arn = "${data.terraform_remote_state.ep.outputs.aws_apigatewayv2_api.execution_arn}/*/*"
 }
 
 resource "aws_sns_topic" "fn_topic" {
