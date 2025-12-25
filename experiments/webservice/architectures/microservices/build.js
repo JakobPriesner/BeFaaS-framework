@@ -12,7 +12,8 @@ const services = {
       ioredis: '^5.3.2',
       'aws-sdk': '^2.1400.0',
       'aws-jwt-verify': '^4.0.0',
-      axios: '^1.4.0'
+      axios: '^1.4.0',
+      jsonwebtoken: '^9.0.2'
     },
     port: 3002
   },
@@ -51,7 +52,8 @@ const services = {
       'aws-sdk': '^2.1400.0',
       'aws-jwt-verify': '^4.0.0',
       'card-validator': '^8.1.1',
-      axios: '^1.4.0'
+      axios: '^1.4.0',
+      jsonwebtoken: '^9.0.2'
     },
     port: 3003
   },

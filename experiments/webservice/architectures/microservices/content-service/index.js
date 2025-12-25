@@ -16,7 +16,20 @@ const { namespace } = configureBeFaaSLib()
 // Create context object for service-to-service calls
 function createContext() {
   return {
-    call: callService
+    call: async (functionName, event) => {
+      // Route internal content-service calls in-process
+      if (functionName === 'getads') {
+        return await getAds(event, createContext())
+      }
+      if (functionName === 'supportedcurrencies') {
+        return await supportedCurrencies(event, createContext())
+      }
+      if (functionName === 'currency') {
+        return await currency(event, createContext())
+      }
+      // External service calls go through HTTP
+      return await callService(functionName, event)
+    }
   }
 }
 

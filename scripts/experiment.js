@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 // Import modules
 const { parseArgs, validateConfig } = require('./experiment/config');
@@ -11,6 +12,7 @@ const { runDeploy, runDestroy, resetCognitoUserPool } = require('./experiment/de
 const { runBenchmark } = require('./experiment/benchmark');
 const { collectMetrics } = require('./experiment/metrics');
 const { collectCloudWatchMetrics } = require('./experiment/cloudwatch-metrics');
+const { collectPricingMetrics } = require('./experiment/pricing');
 const { analyzeResults } = require('./experiment/analysis');
 const {
   S3_BUCKET_NAME,
@@ -61,12 +63,44 @@ async function runBenchmarkPhase(config, phaseName, workload, phaseOutputDir) {
 
     // Collect CloudWatch metrics for ECS/ALB (monolith and microservices only)
     await collectCloudWatchMetrics(config, phaseOutputDir, phaseStartTime, phaseEndTime);
+
+    // Collect pricing metrics for all architectures
+    await collectPricingMetrics(config, phaseOutputDir, phaseStartTime, phaseEndTime);
   }
 
   // Analyze results
   await analyzeResults(config.experiment, phaseOutputDir);
 
   return phaseStartTime;
+}
+
+/**
+ * Pre-register users in Redis for auth modes that require it
+ * @param {string} authMode - Authentication mode
+ */
+async function preregisterRedisUsers(authMode) {
+  // Only run for auth modes that use Redis
+  if (authMode !== 'none' && authMode !== 'service-integrated-manual') {
+    console.log(`Skipping Redis preregistration (auth mode: ${authMode})`);
+    return;
+  }
+
+  logSection('Pre-registering Redis Users');
+  console.log(`Auth mode: ${authMode}`);
+
+  const projectRoot = path.join(__dirname, '..');
+  const preregisterScript = path.join(projectRoot, 'scripts', 'preregister-redis.js');
+
+  try {
+    execSync(`node ${preregisterScript} --auth ${authMode}`, {
+      cwd: projectRoot,
+      stdio: 'inherit'
+    });
+    console.log('✓ Redis user preregistration completed');
+  } catch (error) {
+    console.error('✗ Redis user preregistration failed:', error.message);
+    throw error;
+  }
 }
 
 /**
@@ -115,6 +149,10 @@ function combinePhaseInsights(outputDir, phases, config) {
       overall: {},
       endpoints: {},
       categories: {}
+    },
+    pricing: {
+      phases: {},
+      total: null
     }
   };
 
@@ -201,6 +239,44 @@ function combinePhaseInsights(outputDir, phases, config) {
     }
 
     console.log('✓ Cross-phase comparison generated');
+  }
+
+  // Load and aggregate pricing data from each phase
+  console.log('\nAggregating pricing data...');
+  for (const phase of phases) {
+    const pricingPath = path.join(outputDir, phase, 'pricing', 'pricing.json');
+    if (fs.existsSync(pricingPath)) {
+      try {
+        const phasePricing = JSON.parse(fs.readFileSync(pricingPath, 'utf8'));
+        combinedInsights.pricing.phases[phase] = phasePricing.summary;
+        console.log(`✓ Loaded pricing from ${phase}: $${phasePricing.summary.total_cost.toFixed(6)}`);
+      } catch (error) {
+        console.log(`⚠️  Failed to load pricing from ${phase}: ${error.message}`);
+      }
+    } else {
+      console.log(`⚠️  No pricing.json found for phase ${phase}`);
+    }
+  }
+
+  // Calculate total pricing across all phases
+  const pricingPhases = Object.values(combinedInsights.pricing.phases);
+  if (pricingPhases.length > 0) {
+    const totalCost = pricingPhases.reduce((sum, p) => sum + (p.total_cost || 0), 0);
+    const combinedBreakdown = {};
+
+    for (const phaseSummary of pricingPhases) {
+      for (const [resource, cost] of Object.entries(phaseSummary.breakdown || {})) {
+        combinedBreakdown[resource] = (combinedBreakdown[resource] || 0) + cost;
+      }
+    }
+
+    combinedInsights.pricing.total = {
+      total_cost: totalCost,
+      breakdown: combinedBreakdown,
+      currency: 'USD'
+    };
+
+    console.log(`✓ Total experiment cost: $${totalCost.toFixed(6)}`);
   }
 
   // Write combined insights to root output directory
@@ -291,6 +367,9 @@ async function main() {
       throw new Error('Deployment failed health check');
     }
 
+    // Pre-register users in Redis (for auth modes that require it)
+    await preregisterRedisUsers(config.auth);
+
     // Step 4-7: Run Benchmark Phases
     if (!config.skipBenchmark) {
       const isMultiPhase = config.scaling || config.stressAuth;
@@ -352,6 +431,9 @@ async function main() {
 
           // Collect CloudWatch metrics for ECS/ALB (monolith and microservices only)
           await collectCloudWatchMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
+
+          // Collect pricing metrics for all architectures
+          await collectPricingMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
         }
 
         await analyzeResults(config.experiment, config.outputDir);

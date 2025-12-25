@@ -62,6 +62,16 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
   const destIndexPath = path.join(tmpDir, 'index.js');
   fs.copyFileSync(indexPath, destIndexPath);
 
+  // 2b. Copy ./restHandler.js to tmpDir (REST handler with conditional auth)
+  const restHandlerPath = path.join(__dirname, 'restHandler.js');
+  const destRestHandlerPath = path.join(tmpDir, 'restHandler.js');
+  fs.copyFileSync(restHandlerPath, destRestHandlerPath);
+
+  // 2c. Copy ./authConfig.js to tmpDir (auth configuration)
+  const authConfigPath = path.join(__dirname, 'authConfig.js');
+  const destAuthConfigPath = path.join(tmpDir, 'authConfig.js');
+  fs.copyFileSync(authConfigPath, destAuthConfigPath);
+
   // 3. Copy ./package.json to tmpDir
   const packagePath = path.join(__dirname, 'package.json');
   const destPackagePath = path.join(tmpDir, 'package.json');

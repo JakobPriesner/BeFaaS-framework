@@ -47,8 +47,24 @@ initRedis()
 
 // Create context object with db access for cart operations
 function createContext() {
-  return {
-    call: callService,
+  const ctx = {
+    call: async (functionName, event) => {
+      // Route internal cart-service calls in-process
+      if (functionName === 'cartkvstorage') {
+        return await cartKvStorage(event, createContext())
+      }
+      if (functionName === 'getcart') {
+        return await getCart(event, createContext())
+      }
+      if (functionName === 'addcartitem') {
+        return await addCartItem(event, createContext())
+      }
+      if (functionName === 'emptycart') {
+        return await emptyCart(event, createContext())
+      }
+      // External service calls go through HTTP
+      return await callService(functionName, event)
+    },
     db: {
       get: async (key) => {
         if (!redis) return null
@@ -74,6 +90,7 @@ function createContext() {
       }
     }
   }
+  return ctx
 }
 
 // Health check endpoint

@@ -38,7 +38,17 @@ function ensureTemplatesInitialized() {
 // Create context object for service-to-service calls
 function createContext(req, res) {
   return {
-    call: callService,
+    call: async (functionName, event) => {
+      // Route internal frontend-service calls in-process
+      if (functionName === 'login') {
+        return await login(event, createContext(req, res))
+      }
+      if (functionName === 'register') {
+        return await register(event, createContext(req, res))
+      }
+      // External service calls go through HTTP
+      return await callService(functionName, event)
+    },
     request: { body: req.body },
     params: req.params,
     cookies: {
