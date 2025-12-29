@@ -116,7 +116,11 @@ docker save befaas/artillery:latest | gzip > artillery/image.tar.gz
 echo "Deploying workload..." | chalk blue
 cd infrastructure/services/workload
 terraform init
-terraform apply -auto-approve | tee ../../../artillery/workload-deploy.log
+
+# Pass auth_mode from environment variable (default: none)
+auth_mode="${AUTH_MODE:-none}"
+echo "Auth mode: $auth_mode" | chalk blue
+terraform apply -auto-approve -var="auth_mode=$auth_mode" | tee ../../../artillery/workload-deploy.log
 
 echo "Destroying workload instance..." | chalk blue
 terraform destroy -auto-approve

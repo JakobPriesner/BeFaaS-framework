@@ -4,6 +4,12 @@ variable "validation_mode" {
   default     = "false"
 }
 
+variable "auth_mode" {
+  description = "Authentication mode for user preregistration"
+  type        = string
+  default     = "none"
+}
+
 data "terraform_remote_state" "exp" {
   backend = "local"
 
@@ -20,6 +26,14 @@ data "terraform_remote_state" "vpc" {
   }
 }
 
+data "terraform_remote_state" "redis" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../redisAws/terraform.tfstate"
+  }
+}
+
 locals {
   project_name    = data.terraform_remote_state.exp.outputs.project_name
   deployment_id   = data.terraform_remote_state.exp.outputs.deployment_id
@@ -27,6 +41,7 @@ locals {
   ssh_key_name    = data.terraform_remote_state.vpc.outputs.ssh_key_name
   security_groups = data.terraform_remote_state.vpc.outputs.security_groups
   ssh_private_key = data.terraform_remote_state.vpc.outputs.ssh_private_key
+  redis_endpoint  = try(data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT, "")
 }
 
 data "aws_ami" "ubuntu_lts" {
@@ -73,7 +88,7 @@ resource "aws_instance" "workload" {
       "sudo apt-get update",
       "curl -sSL https://get.docker.com/ | sh",
       "sudo docker load -i /tmp/image.tar.gz",
-      "sudo docker run --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} -e ARTILLERY_VALIDATION_MODE=${var.validation_mode} befaas/artillery"
+      "sudo docker run --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} -e ARTILLERY_VALIDATION_MODE=${var.validation_mode} -e REDIS_ENDPOINT=${local.redis_endpoint} -e AUTH_MODE=${var.auth_mode} befaas/artillery"
     ]
   }
 }

@@ -153,7 +153,7 @@ async function destroyFaaS(experiment) {
   // Set empty fn_env for destroy operations
   process.env.TF_VAR_fn_env = JSON.stringify({});
 
-  // Destroy in reverse order
+  // Destroy providers first
   for (const provider of providers) {
     const providerDir = path.join(projectRoot, 'infrastructure', provider);
     if (fs.existsSync(providerDir)) {
@@ -162,6 +162,35 @@ async function destroyFaaS(experiment) {
         runTerraform(providerDir, 'destroy', { autoApprove: true });
       } catch (error) {
         console.warn(`Warning: Failed to destroy ${provider}:`, error.message);
+      }
+    }
+  }
+
+  // Destroy services (in reverse order: services first, then VPC)
+  if (experimentConfig.services && Object.keys(experimentConfig.services).length > 0) {
+    const services = Object.keys(experimentConfig.services).filter(s => s !== 'workload');
+
+    // Destroy each service
+    for (const service of services) {
+      const serviceDir = path.join(projectRoot, 'infrastructure', 'services', service);
+      if (fs.existsSync(serviceDir)) {
+        console.log(`Destroying service ${service}...`);
+        try {
+          runTerraform(serviceDir, 'destroy', { autoApprove: true });
+        } catch (error) {
+          console.warn(`Warning: Failed to destroy ${service}:`, error.message);
+        }
+      }
+    }
+
+    // Destroy VPC last (after services that depend on it)
+    const vpcDir = path.join(projectRoot, 'infrastructure', 'services', 'vpc');
+    if (fs.existsSync(vpcDir)) {
+      console.log('Destroying VPC...');
+      try {
+        runTerraform(vpcDir, 'destroy', { autoApprove: true });
+      } catch (error) {
+        console.warn(`Warning: Failed to destroy VPC:`, error.message);
       }
     }
   }

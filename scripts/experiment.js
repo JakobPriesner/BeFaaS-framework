@@ -74,34 +74,8 @@ async function runBenchmarkPhase(config, phaseName, workload, phaseOutputDir) {
   return phaseStartTime;
 }
 
-/**
- * Pre-register users in Redis for auth modes that require it
- * @param {string} authMode - Authentication mode
- */
-async function preregisterRedisUsers(authMode) {
-  // Only run for auth modes that use Redis
-  if (authMode !== 'none' && authMode !== 'service-integrated-manual') {
-    console.log(`Skipping Redis preregistration (auth mode: ${authMode})`);
-    return;
-  }
-
-  logSection('Pre-registering Redis Users');
-  console.log(`Auth mode: ${authMode}`);
-
-  const projectRoot = path.join(__dirname, '..');
-  const preregisterScript = path.join(projectRoot, 'scripts', 'preregister-redis.js');
-
-  try {
-    execSync(`node ${preregisterScript} --auth ${authMode}`, {
-      cwd: projectRoot,
-      stdio: 'inherit'
-    });
-    console.log('✓ Redis user preregistration completed');
-  } catch (error) {
-    console.error('✗ Redis user preregistration failed:', error.message);
-    throw error;
-  }
-}
+// Note: Redis preregistration now runs on the workload EC2 instance
+// inside the Docker container (see artillery/preregister-redis.js)
 
 /**
  * Wait for infrastructure to scale down
@@ -367,8 +341,9 @@ async function main() {
       throw new Error('Deployment failed health check');
     }
 
-    // Pre-register users in Redis (for auth modes that require it)
-    await preregisterRedisUsers(config.auth);
+    // Note: Redis user preregistration now runs on the workload EC2 instance
+    // inside the Docker container (see artillery/preregister-redis.js)
+    // The AUTH_MODE env var is passed via workload.sh -> terraform
 
     // Step 4-7: Run Benchmark Phases
     if (!config.skipBenchmark) {

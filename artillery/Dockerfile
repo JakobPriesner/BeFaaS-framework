@@ -6,11 +6,13 @@ WORKDIR /workload
 
 ADD package.json ./
 RUN npm install --production
+RUN npm install bcryptjs
 
 ENV PROCESSOR_DIR /workload
 
 ADD build/index.js ./logger.js
 ADD authConfig.js ./authConfig.js
+ADD preregister-redis.js ./
 
 ADD run.sh ./
 ADD variables.json ./

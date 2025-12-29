@@ -90,8 +90,8 @@ resource "aws_lambda_function" "fn" {
   for_each      = local.fns
   function_name = "${local.project_name}-${each.key}"
 
-  s3_bucket        = aws_s3_bucket_object.source[each.key].bucket
-  s3_key           = aws_s3_bucket_object.source[each.key].key
+  s3_bucket        = aws_s3_object.source[each.key].bucket
+  s3_key           = aws_s3_object.source[each.key].key
   source_code_hash = filebase64sha256(each.value)
 
   handler     = var.handler
