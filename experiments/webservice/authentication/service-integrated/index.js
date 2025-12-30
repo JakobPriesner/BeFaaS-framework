@@ -7,8 +7,10 @@ const fnName = process.env.BEFAAS_FN_NAME || 'unknownFn';
 const deploymentId = process.env.BEFAAS_DEPLOYMENT_ID || 'unknownDeploymentId';
 
 // Log auth timing in BEFAAS format
+// Using console.log instead of process.stdout.write because Lambda CloudWatch
+// captures console.log reliably but may not capture raw stdout writes
 function logAuthTiming(contextId, durationMs, success) {
-  process.stdout.write(
+  console.log(
     'BEFAAS' +
       JSON.stringify({
         timestamp: new Date().getTime(),
@@ -22,8 +24,7 @@ function logAuthTiming(contextId, durationMs, success) {
             success
           }
         }
-      }) +
-      '\n'
+      })
   );
 }
 
