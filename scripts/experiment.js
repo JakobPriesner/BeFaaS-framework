@@ -8,7 +8,7 @@ const { execSync } = require('child_process');
 const { parseArgs, validateConfig } = require('./experiment/config');
 const { validateEnvironment, setHardwareConfig, installTerraformProviders } = require('./experiment/env');
 const { runBuild } = require('./experiment/build');
-const { runDeploy, runDestroy, resetCognitoUserPool } = require('./experiment/deploy');
+const { runDeploy, runDestroy, resetCognitoUserPool, forceDestroyRedis } = require('./experiment/deploy');
 const { runBenchmark } = require('./experiment/benchmark');
 const { collectMetrics } = require('./experiment/metrics');
 const { collectCloudWatchMetrics } = require('./experiment/cloudwatch-metrics');
@@ -302,6 +302,13 @@ async function main() {
     cleanupBuildArtifacts(config.experiment, config.architecture);
 
     try {
+      // Force destroy Redis containers first to prevent hanging
+      try {
+        await forceDestroyRedis(config.experiment);
+      } catch (redisError) {
+        console.warn('Warning: Could not force destroy Redis:', redisError.message);
+      }
+
       await runDestroy(config.experiment, config.architecture);
     } catch (error) {
       console.log('No existing infrastructure to destroy or destroy failed:', error.message);
@@ -448,6 +455,14 @@ async function main() {
     // Cleanup and destroy on error
     console.log('\nCleaning up due to error...');
     try {
+      // Force destroy Redis containers first to prevent hanging
+      console.log('Force destroying Redis containers...');
+      try {
+        await forceDestroyRedis(config.experiment);
+      } catch (redisError) {
+        console.warn('Warning: Could not force destroy Redis:', redisError.message);
+      }
+
       await runDestroy(config.experiment, config.architecture);
       cleanupBuildArtifacts(config.experiment, config.architecture);
     } catch (cleanupError) {

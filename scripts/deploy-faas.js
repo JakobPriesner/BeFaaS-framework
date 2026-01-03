@@ -150,6 +150,17 @@ async function destroyFaaS(experiment) {
   const experimentConfig = JSON.parse(fs.readFileSync(experimentJsonPath, 'utf8'));
   const providers = getProvidersFromConfig(experimentConfig);
 
+  // Force destroy Redis containers first if Redis service exists
+  if (experimentConfig.services && experimentConfig.services.redisAws) {
+    console.log('Force destroying Redis containers before infrastructure destruction...');
+    try {
+      const { forceDestroyRedis } = require('./experiment/deploy');
+      await forceDestroyRedis(experiment);
+    } catch (error) {
+      console.warn('Warning: Redis force destroy failed:', error.message);
+    }
+  }
+
   // Set empty fn_env for destroy operations
   process.env.TF_VAR_fn_env = JSON.stringify({});
 
