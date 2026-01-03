@@ -32,7 +32,44 @@ if [ -z "$log_groups" ]; then
     exit 0
 fi
 
-echo "Found log groups: $(echo $log_groups | wc -w | tr -d ' ')" | chalk green
+log_group_count=$(echo $log_groups | wc -w | tr -d ' ')
+echo "Found log groups: $log_group_count" | chalk green
+
+# Provide cost estimation context
+if [ -z "$timestamp_params" ]; then
+  echo "💰 Cost Warning: Collecting ALL logs from $log_group_count log groups may incur significant CloudWatch data transfer charges" | chalk red
+  echo "   Consider setting EXPERIMENT_START_TIME to reduce costs" | chalk red
+else
+  echo "💰 Cost Optimized: Using timestamp filtering to minimize data transfer charges" | chalk green
+fi
+
+# Setup timestamp filtering if available
+timestamp_params=""
+if [ ! -z "${EXPERIMENT_START_TIME:-}" ]; then
+  start_time_ms="${EXPERIMENT_START_TIME}"
+  end_time_ms="${EXPERIMENT_END_TIME:-$(date +%s)000}"  # Default to now if end time not set
+
+  # Validate timestamp format (should be numeric)
+  if [[ "$start_time_ms" =~ ^[0-9]+$ ]] && [[ "$end_time_ms" =~ ^[0-9]+$ ]]; then
+    timestamp_params="--start-time $start_time_ms --end-time $end_time_ms"
+
+    # Try to format timestamps for display (fallback to raw values if date command fails)
+    start_display=$(date -d "@$((start_time_ms/1000))" -Iseconds 2>/dev/null || echo "$start_time_ms")
+    end_display=$(date -d "@$((end_time_ms/1000))" -Iseconds 2>/dev/null || echo "$end_time_ms")
+    echo "Using timestamp filtering: $start_display to $end_display" | chalk blue
+
+    # Validate time range makes sense
+    if [ "$start_time_ms" -gt "$end_time_ms" ]; then
+      echo "Warning: Start time is after end time, this may produce no results" | chalk yellow
+    fi
+  else
+    echo "Warning: Invalid timestamp format, collecting ALL logs (this may be expensive)" | chalk yellow
+    echo "  EXPERIMENT_START_TIME: $start_time_ms" | chalk yellow
+    echo "  EXPERIMENT_END_TIME: $end_time_ms" | chalk yellow
+  fi
+else
+  echo "Warning: No EXPERIMENT_START_TIME set, collecting ALL logs (this may be expensive)" | chalk yellow
+fi
 
 # Fetch logs from all found log groups with pagination support
 for lg in $log_groups; do
@@ -45,15 +82,21 @@ for lg in $log_groups; do
       do
         if [ $newtoken == "null" ]; then
           echo "no token found, start new chain" | chalk green
-          aws logs get-log-events --log-group-name $lg --log-stream-name $ls --start-from-head --limit 10000 | tee >(jq -c '.events[]' >> $logdir/aws.log) >(jq -c '.nextForwardToken' >> $logdir/token.txt) 1>/dev/null
+          if ! aws logs get-log-events --log-group-name $lg --log-stream-name $ls --start-from-head $timestamp_params --limit 10000 | tee >(jq -c '.events[]' >> $logdir/aws.log) >(jq -c '.nextForwardToken' >> $logdir/token.txt) 1>/dev/null; then
+            echo "Error: Failed to fetch logs from $lg/$ls, skipping..." | chalk red
+            break
+          fi
           #Parse next token
-          newtoken=$(tail -n 1 $logdir/token.txt | cut -d "\"" -f 2)
+          newtoken=$(tail -n 1 $logdir/token.txt | cut -d "\"" -f 2 2>/dev/null || echo "null")
         else
           echo "token already exists, using $newtoken" | chalk red
           token=$newtoken
-          aws logs get-log-events --log-group-name $lg --log-stream-name $ls --start-from-head --next-token $token  --limit 10000 | tee >(jq -c '.events[]' >> $logdir/aws.log) >(jq -c '.nextForwardToken' >> $logdir/token.txt) 1>/dev/null
+          if ! aws logs get-log-events --log-group-name $lg --log-stream-name $ls --start-from-head --next-token $token $timestamp_params --limit 10000 | tee >(jq -c '.events[]' >> $logdir/aws.log) >(jq -c '.nextForwardToken' >> $logdir/token.txt) 1>/dev/null; then
+            echo "Error: Failed to fetch logs from $lg/$ls with token, skipping..." | chalk red
+            break
+          fi
           #Parse next token
-          newtoken=$(tail -n 1 $logdir/token.txt | cut -d "\"" -f 2)
+          newtoken=$(tail -n 1 $logdir/token.txt | cut -d "\"" -f 2 2>/dev/null || echo "$token")
           # if (newtoken == token) => no new next token => end
           if [ $newtoken == $token ]; then
             end=1
