@@ -14,21 +14,27 @@ const { namespace } = configureBeFaaSLib()
 
 
 // Create context object for service-to-service calls
-function createContext() {
+// @param {string|null} authHeader - Optional Authorization header to propagate
+function createContext(authHeader = null) {
   return {
     call: async (functionName, event) => {
+      // Include auth header in event for verifyJWT
+      const eventWithHeaders = authHeader
+        ? { ...event, headers: { authorization: authHeader } }
+        : event
+
       // Route internal content-service calls in-process
       if (functionName === 'getads') {
-        return await getAds(event, createContext())
+        return await getAds(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'supportedcurrencies') {
-        return await supportedCurrencies(event, createContext())
+        return await supportedCurrencies(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'currency') {
-        return await currency(event, createContext())
+        return await currency(eventWithHeaders, createContext(authHeader))
       }
       // External service calls go through HTTP
-      return await callService(functionName, event)
+      return await callService(functionName, event, authHeader)
     }
   }
 }
@@ -41,8 +47,12 @@ app.get('/health', (req, res) => {
 // Content Service Routes
 app.post('/getads', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await getAds(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await getAds(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in getads:', error)
@@ -52,8 +62,12 @@ app.post('/getads', async (req, res) => {
 
 app.post('/supportedcurrencies', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await supportedCurrencies(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await supportedCurrencies(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in supportedcurrencies:', error)
@@ -63,8 +77,12 @@ app.post('/supportedcurrencies', async (req, res) => {
 
 app.post('/currency', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await currency(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await currency(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in currency:', error)

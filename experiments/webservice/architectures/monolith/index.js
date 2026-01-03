@@ -48,49 +48,55 @@ function ensureTemplatesInitialized () {
 
 // Create context object with direct function calling for monolith
 // Functions expect ctx.call() directly (not ctx.lib.call())
-function createFunctionContext() {
+// @param {Object} headers - Optional headers to propagate (e.g., { authorization: 'Bearer ...' })
+function createFunctionContext(headers = {}) {
   const ctx = {}
   ctx.call = async (functionName, event) => {
-    // Create a new context for the called function
-    const innerCtx = createFunctionContext()
+    // Create a new context for the called function, propagating headers
+    const innerCtx = createFunctionContext(headers)
+
+    // Include headers in the event so verifyJWT can access them
+    const eventWithHeaders = headers.authorization
+      ? { ...event, headers: { authorization: headers.authorization } }
+      : event
 
     switch (functionName) {
       case 'addcartitem':
-        return await addCartItem(event, innerCtx)
+        return await addCartItem(eventWithHeaders, innerCtx)
       case 'cartkvstorage':
-        return await cartKvStorage(event, innerCtx)
+        return await cartKvStorage(eventWithHeaders, innerCtx)
       case 'checkout':
-        return await checkout(event, innerCtx)
+        return await checkout(eventWithHeaders, innerCtx)
       case 'currency':
-        return await currency(event, innerCtx)
+        return await currency(eventWithHeaders, innerCtx)
       case 'email':
-        return await email(event, innerCtx)
+        return await email(eventWithHeaders, innerCtx)
       case 'emptycart':
-        return await emptyCart(event, innerCtx)
+        return await emptyCart(eventWithHeaders, innerCtx)
       case 'getads':
-        return await getAds(event, innerCtx)
+        return await getAds(eventWithHeaders, innerCtx)
       case 'getcart':
-        return await getCart(event, innerCtx)
+        return await getCart(eventWithHeaders, innerCtx)
       case 'getproduct':
-        return await getProduct(event, innerCtx)
+        return await getProduct(eventWithHeaders, innerCtx)
       case 'listproducts':
-        return await listProducts(event, innerCtx)
+        return await listProducts(eventWithHeaders, innerCtx)
       case 'listrecommendations':
-        return await listRecommendations(event, innerCtx)
+        return await listRecommendations(eventWithHeaders, innerCtx)
       case 'payment':
-        return await payment(event, innerCtx)
+        return await payment(eventWithHeaders, innerCtx)
       case 'searchproducts':
-        return await searchProducts(event, innerCtx)
+        return await searchProducts(eventWithHeaders, innerCtx)
       case 'shipmentquote':
-        return await shipmentQuote(event, innerCtx)
+        return await shipmentQuote(eventWithHeaders, innerCtx)
       case 'shiporder':
-        return await shipOrder(event, innerCtx)
+        return await shipOrder(eventWithHeaders, innerCtx)
       case 'supportedcurrencies':
-        return await supportedCurrencies(event, innerCtx)
+        return await supportedCurrencies(eventWithHeaders, innerCtx)
       case 'login':
-        return await login(event, innerCtx)
+        return await login(eventWithHeaders, innerCtx)
       case 'register':
-        return await register(event, innerCtx)
+        return await register(eventWithHeaders, innerCtx)
       default:
         throw new Error(`Function not found: ${functionName}`)
     }
@@ -100,8 +106,12 @@ function createFunctionContext() {
 
 // Middleware to inject function context (for ctx.call())
 app.use(async (ctx, next) => {
+  // Extract Authorization header to propagate through call chain
+  const authHeader = ctx.request.get('Authorization') || ctx.request.get('authorization')
+  const headers = authHeader ? { authorization: authHeader } : {}
+
   // Add call method directly to ctx for functions that expect ctx.call()
-  const fnCtx = createFunctionContext()
+  const fnCtx = createFunctionContext(headers)
   ctx.call = fnCtx.call
   await next()
 })

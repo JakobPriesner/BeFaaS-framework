@@ -15,25 +15,31 @@ app.use(express.json())
 const { namespace } = configureBeFaaSLib()
 
 // Create context object for service-to-service calls
-function createContext() {
+// @param {string|null} authHeader - Optional Authorization header to propagate
+function createContext(authHeader = null) {
   return {
     call: async (functionName, event) => {
+      // Include auth header in event for verifyJWT
+      const eventWithHeaders = authHeader
+        ? { ...event, headers: { authorization: authHeader } }
+        : event
+
       // Check if this is an internal service call (within order-service)
       if (functionName === 'payment') {
-        return await payment(event, createContext())
+        return await payment(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'shipmentquote') {
-        return await shipmentQuote(event, createContext())
+        return await shipmentQuote(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'email') {
-        return await email(event, createContext())
+        return await email(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'shiporder') {
-        return await shipOrder(event, createContext())
+        return await shipOrder(eventWithHeaders, createContext(authHeader))
       }
 
       // For external service calls, use HTTP service discovery
-      return await callService(functionName, event)
+      return await callService(functionName, event, authHeader)
     }
   }
 }
@@ -46,8 +52,13 @@ app.get('/health', (req, res) => {
 // Order Service Routes
 app.post('/checkout', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await checkout(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    // Include headers in event for verifyJWT
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await checkout(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in checkout:', error)
@@ -57,8 +68,12 @@ app.post('/checkout', async (req, res) => {
 
 app.post('/payment', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await payment(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await payment(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in payment:', error)
@@ -68,8 +83,12 @@ app.post('/payment', async (req, res) => {
 
 app.post('/shipmentquote', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await shipmentQuote(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await shipmentQuote(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in shipmentquote:', error)
@@ -79,8 +98,12 @@ app.post('/shipmentquote', async (req, res) => {
 
 app.post('/email', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await email(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await email(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in email:', error)
@@ -90,8 +113,12 @@ app.post('/email', async (req, res) => {
 
 app.post('/shiporder', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await shipOrder(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await shipOrder(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in shiporder:', error)

@@ -14,24 +14,30 @@ app.use(express.json())
 const { namespace } = configureBeFaaSLib()
 
 // Create context object for service-to-service calls
-function createContext() {
+// @param {string|null} authHeader - Optional Authorization header to propagate
+function createContext(authHeader = null) {
   return {
     call: async (functionName, event) => {
+      // Include auth header in event for verifyJWT
+      const eventWithHeaders = authHeader
+        ? { ...event, headers: { authorization: authHeader } }
+        : event
+
       // Route internal product-service calls in-process
       if (functionName === 'getproduct') {
-        return await getProduct(event, createContext())
+        return await getProduct(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'listproducts') {
-        return await listProducts(event, createContext())
+        return await listProducts(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'searchproducts') {
-        return await searchProducts(event, createContext())
+        return await searchProducts(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'listrecommendations') {
-        return await listRecommendations(event, createContext())
+        return await listRecommendations(eventWithHeaders, createContext(authHeader))
       }
       // External service calls go through HTTP
-      return await callService(functionName, event)
+      return await callService(functionName, event, authHeader)
     }
   }
 }
@@ -44,8 +50,12 @@ app.get('/health', (req, res) => {
 // Product Service Routes
 app.post('/getproduct', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await getProduct(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await getProduct(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in getproduct:', error)
@@ -55,8 +65,12 @@ app.post('/getproduct', async (req, res) => {
 
 app.post('/listproducts', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await listProducts(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await listProducts(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in listproducts:', error)
@@ -66,8 +80,12 @@ app.post('/listproducts', async (req, res) => {
 
 app.post('/searchproducts', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await searchProducts(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await searchProducts(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in searchproducts:', error)
@@ -77,8 +95,12 @@ app.post('/searchproducts', async (req, res) => {
 
 app.post('/listrecommendations', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await listRecommendations(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await listRecommendations(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in listrecommendations:', error)

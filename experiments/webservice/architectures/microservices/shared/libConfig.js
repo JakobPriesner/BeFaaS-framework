@@ -106,14 +106,21 @@ function registerLocalHandler(functionName, handler) {
 
 /**
  * Call another microservice via HTTP, or invoke locally if same service
+ * @param {string} functionName - The function to call
+ * @param {Object} payload - The request payload
+ * @param {string|null} authHeader - Optional Authorization header to forward
  */
-async function callService(functionName, payload) {
+async function callService(functionName, payload, authHeader = null) {
   const targetService = functionToService[functionName]
 
   // If the target function is in the same service and has a local handler, call it directly
   if (currentService && targetService === currentService && localHandlers[functionName]) {
     try {
-      return await localHandlers[functionName](payload)
+      // Include auth header in payload for local calls too
+      const payloadWithHeaders = authHeader
+        ? { ...payload, headers: { authorization: authHeader } }
+        : payload
+      return await localHandlers[functionName](payloadWithHeaders)
     } catch (error) {
       console.error(`Error calling local ${functionName}:`, error.message)
       throw error
@@ -126,9 +133,17 @@ async function callService(functionName, payload) {
     throw new Error(`Unknown function: ${functionName}`)
   }
 
+  // Include auth header in payload body so handler can access it via event.headers
+  const payloadWithHeaders = authHeader
+    ? { ...payload, headers: { authorization: authHeader } }
+    : payload
+
   try {
-    const response = await axios.post(endpoint, payload, {
-      headers: { 'Content-Type': 'application/json' },
+    const response = await axios.post(endpoint, payloadWithHeaders, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authHeader && { 'Authorization': authHeader })
+      },
       timeout: 30000
     })
     return response.data

@@ -36,18 +36,26 @@ function ensureTemplatesInitialized() {
 }
 
 // Create context object for service-to-service calls
-function createContext(req, res) {
+// @param {Object} req - Express request object
+// @param {Object} res - Express response object
+// @param {string|null} authHeader - Optional Authorization header to propagate
+function createContext(req, res, authHeader = null) {
   return {
     call: async (functionName, event) => {
+      // Include auth header in event for verifyJWT
+      const eventWithHeaders = authHeader
+        ? { ...event, headers: { authorization: authHeader } }
+        : event
+
       // Route internal frontend-service calls in-process
       if (functionName === 'login') {
-        return await login(event, createContext(req, res))
+        return await login(eventWithHeaders, createContext(req, res, authHeader))
       }
       if (functionName === 'register') {
-        return await register(event, createContext(req, res))
+        return await register(eventWithHeaders, createContext(req, res, authHeader))
       }
       // External service calls go through HTTP
-      return await callService(functionName, event)
+      return await callService(functionName, event, authHeader)
     },
     request: { body: req.body },
     params: req.params,
@@ -78,7 +86,8 @@ function wrapFrontendHandler(handler) {
   return async (req, res) => {
     try {
       ensureTemplatesInitialized()
-      const ctx = createContext(req, res)
+      const authHeader = req.headers.authorization
+      const ctx = createContext(req, res, authHeader)
       await handler(ctx)
     } catch (error) {
       console.error('Error in frontend handler:', error)
@@ -112,8 +121,12 @@ app.post('/addCartItem', wrapFrontendHandler(frontendHandlers.handleAddCartItem)
 // ============================================
 app.post('/api/login', async (req, res) => {
   try {
-    const ctx = createContext(req, res)
-    const result = await login(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(req, res, authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await login(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in login:', error)
@@ -123,8 +136,12 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
   try {
-    const ctx = createContext(req, res)
-    const result = await register(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(req, res, authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await register(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in register:', error)

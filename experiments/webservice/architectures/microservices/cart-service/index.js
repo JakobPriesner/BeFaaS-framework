@@ -46,24 +46,30 @@ function initRedis() {
 initRedis()
 
 // Create context object with db access for cart operations
-function createContext() {
+// @param {string|null} authHeader - Optional Authorization header to propagate
+function createContext(authHeader = null) {
   const ctx = {
     call: async (functionName, event) => {
+      // Include auth header in event for verifyJWT
+      const eventWithHeaders = authHeader
+        ? { ...event, headers: { authorization: authHeader } }
+        : event
+
       // Route internal cart-service calls in-process
       if (functionName === 'cartkvstorage') {
-        return await cartKvStorage(event, createContext())
+        return await cartKvStorage(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'getcart') {
-        return await getCart(event, createContext())
+        return await getCart(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'addcartitem') {
-        return await addCartItem(event, createContext())
+        return await addCartItem(eventWithHeaders, createContext(authHeader))
       }
       if (functionName === 'emptycart') {
-        return await emptyCart(event, createContext())
+        return await emptyCart(eventWithHeaders, createContext(authHeader))
       }
       // External service calls go through HTTP
-      return await callService(functionName, event)
+      return await callService(functionName, event, authHeader)
     },
     db: {
       get: async (key) => {
@@ -101,8 +107,12 @@ app.get('/health', (req, res) => {
 // Cart Service Routes
 app.post('/getcart', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await getCart(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await getCart(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in getcart:', error)
@@ -112,8 +122,12 @@ app.post('/getcart', async (req, res) => {
 
 app.post('/addcartitem', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await addCartItem(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await addCartItem(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in addcartitem:', error)
@@ -123,8 +137,12 @@ app.post('/addcartitem', async (req, res) => {
 
 app.post('/emptycart', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await emptyCart(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await emptyCart(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in emptycart:', error)
@@ -134,8 +152,12 @@ app.post('/emptycart', async (req, res) => {
 
 app.post('/cartkvstorage', async (req, res) => {
   try {
-    const ctx = createContext()
-    const result = await cartKvStorage(req.body, ctx)
+    const authHeader = req.headers.authorization
+    const ctx = createContext(authHeader)
+    const event = authHeader
+      ? { ...req.body, headers: { authorization: authHeader } }
+      : req.body
+    const result = await cartKvStorage(event, ctx)
     res.json(result)
   } catch (error) {
     console.error('Error in cartkvstorage:', error)

@@ -358,9 +358,23 @@ async function handleSetUser(ctx) {
   storageObj.jwtToken = authResult.accessToken
   console.log(`User ${userName} authenticated successfully`)
 
+  // Check if client wants JSON response (for API/Artillery clients)
+  const acceptHeader = ctx.request.headers.accept || ''
+  const wantsJson = acceptHeader.includes('application/json')
+
   ctx.type = 'application/json'
-  ctx.response.redirect('back')
   storeCookies(ctx)
+
+  if (wantsJson) {
+    // API clients: return JSON with token (status 200)
+    ctx.body = {
+      accessToken: authResult.accessToken,
+      userName
+    }
+  } else {
+    // Browser clients: redirect back (status 302)
+    ctx.response.redirect('back')
+  }
 }
 
 async function handleRegister(ctx) {
