@@ -171,24 +171,31 @@ async function analyzeResults(experiment, outputDir) {
     const containerLogsDir = `/experiments/${path.relative(projectRoot, absoluteLogsDir)}`;
     const containerAnalysisDir = `/experiments/${path.relative(projectRoot, absoluteAnalysisDir)}`;
 
-    execSync(`docker run --rm -v "${projectRoot}":/experiments befaas/analysis "${containerLogsDir}" "${containerAnalysisDir}"`, {
-      stdio: 'inherit',
-      shell: '/bin/bash'
-    });
-
     const dumpFile = path.join(analysisDir, 'dump.json');
-
-    // Check if dump.json was created and has content
     let needsFallback = false;
-    if (!fs.existsSync(dumpFile)) {
-      console.log('dump.json not created by container');
-      needsFallback = true;
-    } else {
-      const dumpContent = fs.readFileSync(dumpFile, 'utf8').trim();
-      if (dumpContent === '[]' || dumpContent === '{}' || dumpContent.length < 10) {
-        console.log('dump.json is empty, using fallback parser');
+
+    // Try Docker first, but use fallback if it fails
+    try {
+      execSync(`docker run --rm -v "${projectRoot}":/experiments befaas/analysis "${containerLogsDir}" "${containerAnalysisDir}"`, {
+        stdio: 'inherit',
+        shell: '/bin/bash'
+      });
+
+      // Check if dump.json was created and has content
+      if (!fs.existsSync(dumpFile)) {
+        console.log('dump.json not created by container');
         needsFallback = true;
+      } else {
+        const dumpContent = fs.readFileSync(dumpFile, 'utf8').trim();
+        if (dumpContent === '[]' || dumpContent === '{}' || dumpContent.length < 10) {
+          console.log('dump.json is empty, using fallback parser');
+          needsFallback = true;
+        }
       }
+    } catch (dockerError) {
+      console.log(`Docker analysis failed: ${dockerError.message}`);
+      console.log('Using fallback parser instead...');
+      needsFallback = true;
     }
 
     // Fallback: Parse log files directly if container didn't produce results

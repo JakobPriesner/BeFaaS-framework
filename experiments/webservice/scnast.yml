@@ -1,0 +1,137 @@
+# Goal: scientific proof benchmark for web services
+
+config:
+  target: ' '
+  phases:
+    - name: 'Warm-up'
+      duration: 300
+      arrivalRate: 1
+      rampTo: 5
+    - name: 'Baseline'
+      duration: 300
+      arrivalRate: 5
+    - name: 'Morning rush'
+      duration: 600
+      arrivalRate: 5
+      rampTo: 50
+    - name: 'Stabilization'
+      duration: 1200
+      arrivalRate: 50
+    - name: 'Flash Crowd'
+      duration: 120
+      arrivalRate: 50
+      rampTo: 200
+    - name: 'Cool-down'
+      duration: 900
+      arrivalRate: 200
+      rampTo: 5
+  processor: '{{ $processEnvironment.PROCESSOR_DIR }}/logger.js'
+
+  payload:
+    path: 'users.csv'
+    fields:
+      - 'userName'
+      - 'password'
+    loadAll: true
+    order: 'sequence' # Ensure each user is used, reproducible
+  variables:
+    product:
+      - 'QWERTY'
+      - 'EASYSTOOL'
+      - 'REFLECTXXX'
+
+scenarios:
+  - name: 'Anonymous Browse Flow'
+    weight: 80
+    flow:
+      - get:
+          name: 'load homepage'
+          url: '{{ frontend }}/'
+          beforeRequest: 'beforeAnonymousRequest'
+          afterResponse: 'afterAnonymousResponse'
+      - loop:
+          - get:
+              name: 'view product'
+              url: '{{ frontend }}/product/{{ product }}'
+              beforeRequest: 'beforeAnonymousRequest'
+              afterResponse: 'afterAnonymousResponse'
+          - think: 2
+        count: 3
+  - name: 'Authenticated Session Flow'
+    weight: 20
+    flow:
+      - post:
+          name: 'login'
+          url: '{{ frontend }}/setUser'
+          json:
+            userName: '{{ userName }}'
+            password: '{{ password }}'
+          headers:
+            Accept: 'application/json'
+          capture:
+            - json: '$.accessToken'
+              as: 'token'
+          expect:
+            - statusCode: 200
+          followRedirect: false
+          beforeRequest: 'beforeAuthRequest'
+          afterResponse: 'afterAuthResponse'
+      - get:
+          name: 'load homepage'
+          url: '{{ frontend }}/'
+          headers:
+            Authorization: 'Bearer {{ token }}'
+          beforeRequest: 'beforeAuthRequest'
+          afterResponse: 'afterAuthResponse'
+      - loop:
+          - get:
+              name: 'view product'
+              url: '{{ frontend }}/product/{{ product }}'
+              headers:
+                Authorization: 'Bearer {{ token }}'
+              beforeRequest: 'beforeAuthRequest'
+              afterResponse: 'afterAuthResponse'
+              expect:
+                - statusCode: 200
+          - post:
+              name: 'add to cart'
+              url: '{{ frontend }}/addCartItem'
+              json:
+                productId: '{{ product }}'
+                quantity: 1
+              headers:
+                Authorization: 'Bearer {{ token }}'
+              beforeRequest: 'beforeAuthRequest'
+              afterResponse: 'afterAuthResponse'
+              expect:
+                - statusCode: 200
+        count: 2
+      - get:
+          url: '{{ frontend }}/cart'
+          headers:
+            Authorization: 'Bearer {{ token }}'
+          expect:
+            - statusCode: 200
+          beforeRequest: 'beforeAuthRequest'
+          afterResponse: 'afterAuthResponse'
+      - post:
+          name: 'checkout'
+          headers:
+            Authorization: 'Bearer {{ token }}'
+          url: '{{ frontend }}/checkout'
+          followRedirect: true
+          form:
+            email: 'blubb@blubbmail.com'
+            street_address: 'awesome street'
+            zip_code: '12362'
+            city: 'nope city'
+            state: 'NY'
+            country: 'Germany GmbH'
+            credit_card_number: '4432-8015-6152-0454'
+            credit_card_expiration_month: '1'
+            credit_card_expiration_year: '2029'
+            credit_card_cvv: '123'
+          beforeRequest: 'beforeAuthRequest'
+          afterResponse: 'afterAuthResponse'
+          expect:
+            - statusCode: 200

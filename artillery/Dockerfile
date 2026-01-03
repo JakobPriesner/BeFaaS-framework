@@ -8,7 +8,7 @@ ADD package.json ./
 RUN npm install --production
 RUN npm install bcryptjs
 
-ENV PROCESSOR_DIR /workload
+ENV PROCESSOR_DIR=/workload
 
 ADD build/index.js ./logger.js
 ADD authConfig.js ./authConfig.js
@@ -17,9 +17,7 @@ ADD preregister-redis.js ./
 ADD run.sh ./
 ADD variables.json ./
 ADD workload.yml ./
-ADD usernames.csv ./
 ADD users.csv ./
-ADD users_small.csv ./
 ADD image-ambulance.jpg ./
 ADD image-noambulance.jpg ./
 

@@ -86,7 +86,9 @@ resource "aws_instance" "workload" {
 
     inline = [
       "sudo apt-get update",
-      "curl -sSL https://get.docker.com/ | sh",
+      "sudo apt-get install -y docker.io",
+      "sudo systemctl start docker",
+      "sudo systemctl enable docker",
       "sudo docker load -i /tmp/image.tar.gz",
       "sudo docker run --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} -e ARTILLERY_VALIDATION_MODE=${var.validation_mode} -e REDIS_ENDPOINT=${local.redis_endpoint} -e AUTH_MODE=${var.auth_mode} befaas/artillery"
     ]

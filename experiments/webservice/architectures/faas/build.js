@@ -72,6 +72,11 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
   const destAuthConfigPath = path.join(tmpDir, 'authConfig.js');
   fs.copyFileSync(authConfigPath, destAuthConfigPath);
 
+  // 2d. Copy ./authCall.js to tmpDir (auth call wrapper for function-to-function calls)
+  const authCallPath = path.join(__dirname, 'authCall.js');
+  const destAuthCallPath = path.join(tmpDir, 'authCall.js');
+  fs.copyFileSync(authCallPath, destAuthCallPath);
+
   // 3. Copy ./package.json to tmpDir
   const packagePath = path.join(__dirname, 'package.json');
   const destPackagePath = path.join(tmpDir, 'package.json');
