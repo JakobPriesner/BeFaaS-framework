@@ -52,7 +52,13 @@ async function collectMetrics(experiment, outputDir, experimentStartTime) {
     // Add experiment start time if available
     if (experimentStartTime) {
       logsEnv.EXPERIMENT_START_TIME = experimentStartTime.toString();
+
+      // Add experiment end time with 1 minute buffer to capture trailing metrics
+      const experimentEndTime = Date.now() + 60000; // 1 minute buffer
+      logsEnv.EXPERIMENT_END_TIME = experimentEndTime.toString();
+
       console.log(`Filtering logs from: ${new Date(experimentStartTime).toISOString()}`);
+      console.log(`Filtering logs to: ${new Date(experimentEndTime).toISOString()}`);
     }
 
     // Run logs.sh to collect logs from providers (must run from project root)
