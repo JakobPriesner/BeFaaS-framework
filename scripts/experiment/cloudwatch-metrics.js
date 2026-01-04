@@ -32,7 +32,7 @@ function getTerraformOutputs (infraDir) {
 }
 
 /**
- * Collect CloudWatch metrics for ECS and ALB resources
+ * Collect CloudWatch metrics for ECS/ALB (monolith/microservices) or Lambda (FaaS)
  * @param {Object} config - Configuration object with architecture, experiment, etc.
  * @param {string} outputDir - Directory to save metrics
  * @param {number} startTime - Start timestamp in milliseconds
@@ -44,11 +44,312 @@ async function collectCloudWatchMetrics (config, outputDir, startTime, endTime =
   const { architecture } = config
   const projectRoot = path.join(__dirname, '..', '..')
 
-  // Only collect for ECS-based architectures
-  if (architecture !== 'monolith' && architecture !== 'microservices') {
-    console.log(`Skipping CloudWatch metrics for architecture: ${architecture}`)
+  // Route to architecture-specific metrics collection
+  if (architecture === 'faas') {
+    return await collectFaaSCloudWatchMetrics(config, outputDir, startTime, endTime, projectRoot)
+  } else if (architecture === 'monolith' || architecture === 'microservices') {
+    return await collectECSCloudWatchMetrics(config, outputDir, startTime, endTime, projectRoot)
+  } else {
+    console.log(`Unknown architecture: ${architecture}`)
     return null
   }
+}
+
+/**
+ * Collect CloudWatch metrics for FaaS architecture (Lambda only - essential metrics)
+ * Collects: Duration, Concurrent Executions, Throttles, Errors, Invocations per function
+ * Note: Latency/throughput captured by Artillery, so skipping API Gateway metrics
+ */
+async function collectFaaSCloudWatchMetrics (config, outputDir, startTime, endTime, projectRoot) {
+  const { architecture } = config
+
+  // Get infrastructure directory for FaaS
+  const infraDir = path.join(projectRoot, 'infrastructure', 'aws')
+  if (!fs.existsSync(path.join(infraDir, 'terraform.tfstate'))) {
+    console.log('No Terraform state found for FaaS infrastructure, skipping CloudWatch metrics')
+    return null
+  }
+
+  // Get Terraform outputs
+  const outputs = getTerraformOutputs(infraDir)
+  if (!outputs) {
+    return null
+  }
+
+  // Validate required outputs
+  if (!outputs.lambda_function_names || Object.keys(outputs.lambda_function_names).length === 0) {
+    console.log('⚠️ No Lambda functions found in Terraform outputs')
+    return null
+  }
+
+  const lambdaFunctionNames = Object.values(outputs.lambda_function_names)
+  const lambdaMemorySize = outputs.lambda_memory_size || 'unknown'
+
+  console.log('Retrieved Terraform outputs:')
+  console.log(`  Lambda Functions: ${lambdaFunctionNames.length}`)
+  console.log(`  Lambda Memory: ${lambdaMemorySize} MB`)
+
+  // Get AWS region
+  const awsRegion = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1'
+  console.log(`  Region: ${awsRegion}`)
+
+  // Initialize CloudWatch client
+  const cloudwatch = new CloudWatchClient({ region: awsRegion })
+
+  // Calculate time range
+  const startDate = new Date(startTime)
+  const endDate = new Date(endTime)
+  const durationMinutes = Math.ceil((endTime - startTime) / 60000)
+
+  // Use 1-minute period for granular data
+  const period = 60
+
+  console.log(`\nTime range: ${startDate.toISOString()} to ${endDate.toISOString()}`)
+  console.log(`Duration: ${durationMinutes} minutes`)
+
+  // Build metric queries - essential Lambda metrics only
+  const metricQueries = []
+  let queryId = 0
+
+  for (const functionName of lambdaFunctionNames) {
+    // Extract short name for labels (remove project prefix)
+    const shortName = functionName.includes('-')
+      ? functionName.split('-').slice(1).join('-')
+      : functionName
+
+    // Invocations
+    metricQueries.push({
+      Id: `lambda_inv_${queryId++}`,
+      MetricStat: {
+        Metric: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'Invocations',
+          Dimensions: [{ Name: 'FunctionName', Value: functionName }]
+        },
+        Period: period,
+        Stat: 'Sum'
+      },
+      Label: `Lambda Invocations - ${shortName}`
+    })
+
+    // Duration (avg, p95, p99)
+    metricQueries.push({
+      Id: `lambda_dur_avg_${queryId++}`,
+      MetricStat: {
+        Metric: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'Duration',
+          Dimensions: [{ Name: 'FunctionName', Value: functionName }]
+        },
+        Period: period,
+        Stat: 'Average'
+      },
+      Label: `Lambda Duration (avg) - ${shortName}`
+    })
+
+    metricQueries.push({
+      Id: `lambda_dur_p95_${queryId++}`,
+      MetricStat: {
+        Metric: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'Duration',
+          Dimensions: [{ Name: 'FunctionName', Value: functionName }]
+        },
+        Period: period,
+        Stat: 'p95'
+      },
+      Label: `Lambda Duration (p95) - ${shortName}`
+    })
+
+    metricQueries.push({
+      Id: `lambda_dur_p99_${queryId++}`,
+      MetricStat: {
+        Metric: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'Duration',
+          Dimensions: [{ Name: 'FunctionName', Value: functionName }]
+        },
+        Period: period,
+        Stat: 'p99'
+      },
+      Label: `Lambda Duration (p99) - ${shortName}`
+    })
+
+    // Errors
+    metricQueries.push({
+      Id: `lambda_err_${queryId++}`,
+      MetricStat: {
+        Metric: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'Errors',
+          Dimensions: [{ Name: 'FunctionName', Value: functionName }]
+        },
+        Period: period,
+        Stat: 'Sum'
+      },
+      Label: `Lambda Errors - ${shortName}`
+    })
+
+    // Throttles
+    metricQueries.push({
+      Id: `lambda_thr_${queryId++}`,
+      MetricStat: {
+        Metric: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'Throttles',
+          Dimensions: [{ Name: 'FunctionName', Value: functionName }]
+        },
+        Period: period,
+        Stat: 'Sum'
+      },
+      Label: `Lambda Throttles - ${shortName}`
+    })
+
+    // Concurrent Executions (max, avg)
+    metricQueries.push({
+      Id: `lambda_conc_max_${queryId++}`,
+      MetricStat: {
+        Metric: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'ConcurrentExecutions',
+          Dimensions: [{ Name: 'FunctionName', Value: functionName }]
+        },
+        Period: period,
+        Stat: 'Maximum'
+      },
+      Label: `Lambda Concurrent Executions (max) - ${shortName}`
+    })
+
+    metricQueries.push({
+      Id: `lambda_conc_avg_${queryId++}`,
+      MetricStat: {
+        Metric: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'ConcurrentExecutions',
+          Dimensions: [{ Name: 'FunctionName', Value: functionName }]
+        },
+        Period: period,
+        Stat: 'Average'
+      },
+      Label: `Lambda Concurrent Executions (avg) - ${shortName}`
+    })
+  }
+
+  // Fetch metrics (CloudWatch allows max 500 metrics per request)
+  console.log(`\nFetching ${metricQueries.length} metric series...`)
+
+  try {
+    // Split queries into batches of 500 (CloudWatch limit)
+    const batchSize = 500
+    const allResults = []
+
+    for (let i = 0; i < metricQueries.length; i += batchSize) {
+      const batch = metricQueries.slice(i, i + batchSize)
+      const command = new GetMetricDataCommand({
+        MetricDataQueries: batch,
+        StartTime: startDate,
+        EndTime: endDate
+      })
+
+      const response = await cloudwatch.send(command)
+      allResults.push(...response.MetricDataResults)
+
+      if (metricQueries.length > batchSize) {
+        console.log(`  Fetched batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(metricQueries.length / batchSize)}`)
+      }
+    }
+
+    // Process results
+    const metricsData = {
+      meta: {
+        architecture,
+        lambda_functions: lambdaFunctionNames,
+        lambda_memory_size_mb: lambdaMemorySize,
+        region: awsRegion,
+        start_time: startDate.toISOString(),
+        end_time: endDate.toISOString(),
+        period_seconds: period,
+        collected_at: new Date().toISOString()
+      },
+      metrics: {}
+    }
+
+    for (const result of allResults) {
+      const metricName = result.Label
+      const timestamps = result.Timestamps || []
+      const values = result.Values || []
+
+      // Combine timestamps and values into data points
+      const dataPoints = timestamps.map((ts, i) => ({
+        timestamp: ts.toISOString(),
+        value: values[i]
+      }))
+
+      // Sort by timestamp ascending
+      dataPoints.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+
+      metricsData.metrics[metricName] = {
+        id: result.Id,
+        status: result.StatusCode,
+        data_points: dataPoints,
+        summary: dataPoints.length > 0
+          ? {
+              count: dataPoints.length,
+              min: Math.min(...values),
+              max: Math.max(...values),
+              avg: values.reduce((a, b) => a + b, 0) / values.length
+            }
+          : null
+      }
+
+      console.log(`  ${metricName}: ${dataPoints.length} data points`)
+    }
+
+    // Save metrics to file
+    const metricsDir = path.join(outputDir, 'cloudwatch')
+    if (!fs.existsSync(metricsDir)) {
+      fs.mkdirSync(metricsDir, { recursive: true })
+    }
+
+    const metricsFile = path.join(metricsDir, 'metrics.json')
+    fs.writeFileSync(metricsFile, JSON.stringify(metricsData, null, 2))
+    console.log(`\n✓ FaaS CloudWatch metrics saved to: ${metricsFile}`)
+
+    // Save Lambda metrics as CSV
+    await saveFaaSMetricsAsCsv(metricsData, metricsDir)
+
+    return metricsData
+  } catch (error) {
+    console.error(`✗ FaaS metrics collection failed: ${error.message}`)
+    return null
+  }
+}
+
+/**
+ * Save FaaS metrics data as CSV files
+ */
+async function saveFaaSMetricsAsCsv (metricsData, metricsDir) {
+  const lambdaMetrics = {}
+
+  for (const [name, metric] of Object.entries(metricsData.metrics)) {
+    if (name.startsWith('Lambda')) {
+      lambdaMetrics[name] = metric
+    }
+  }
+
+  if (Object.keys(lambdaMetrics).length > 0) {
+    const csvFile = path.join(metricsDir, 'lambda_metrics.csv')
+    const csv = generateCsv(lambdaMetrics)
+    fs.writeFileSync(csvFile, csv)
+    console.log(`✓ Lambda metrics CSV saved to: ${csvFile}`)
+  }
+}
+
+/**
+ * Collect CloudWatch metrics for ECS-based architectures (monolith/microservices)
+ */
+async function collectECSCloudWatchMetrics (config, outputDir, startTime, endTime, projectRoot) {
+  const { architecture } = config
 
   // Get infrastructure directory
   const infraDir = path.join(projectRoot, 'infrastructure', architecture, 'aws')

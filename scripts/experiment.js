@@ -12,6 +12,7 @@ const { runDeploy, runDestroy, resetCognitoUserPool, forceDestroyRedis } = requi
 const { runBenchmark } = require('./experiment/benchmark');
 const { collectMetrics } = require('./experiment/metrics');
 const { collectCloudWatchMetrics } = require('./experiment/cloudwatch-metrics');
+const { collectAndCleanupLambdaLogs, cleanupOldLogGroupsForRun } = require('./experiment/lambda-logs');
 const { collectPricingMetrics } = require('./experiment/pricing');
 const { analyzeResults } = require('./experiment/analysis');
 const {
@@ -52,16 +53,21 @@ async function runBenchmarkPhase(config, phaseName, workload, phaseOutputDir) {
   await resetCognitoUserPool();
 
   // Run benchmark
-  await runBenchmark(config.experiment, workload, phaseOutputDir);
+  await runBenchmark(config.experiment, workload, phaseOutputDir, config.auth);
 
   // Record phase end time (add 1 minute buffer to capture trailing metrics)
   const phaseEndTime = Date.now() + 60000;
 
   // Collect metrics
   if (!config.skipMetrics) {
-    await collectMetrics(config.experiment, phaseOutputDir, phaseStartTime);
+    await collectMetrics(config.experiment, phaseOutputDir, phaseStartTime, config.architecture);
 
-    // Collect CloudWatch metrics for ECS/ALB (monolith and microservices only)
+    // Collect Lambda logs for FaaS architecture and cleanup log groups after collection
+    if (config.architecture === 'faas') {
+      await collectAndCleanupLambdaLogs(config, phaseOutputDir, phaseStartTime, phaseEndTime);
+    }
+
+    // Collect CloudWatch metrics for all architectures
     await collectCloudWatchMetrics(config, phaseOutputDir, phaseStartTime, phaseEndTime);
 
     // Collect pricing metrics for all architectures
@@ -314,6 +320,13 @@ async function main() {
       console.log('No existing infrastructure to destroy or destroy failed:', error.message);
     }
 
+    // Clean up old CloudWatch log groups for this run_id (FaaS only)
+    // This ensures we start with clean logs even if a previous run failed
+    if (config.architecture === 'faas') {
+      logSection('Cleaning Up Old CloudWatch Logs');
+      await cleanupOldLogGroupsForRun(config.runId);
+    }
+
     // Step 2: Build
     buildDir = await runBuild(config.experiment, config.architecture, config.auth, config.bundleMode);
 
@@ -403,15 +416,20 @@ async function main() {
       } else {
         // Single-phase benchmark (original behavior - baseline only)
         await resetCognitoUserPool();
-        await runBenchmark(config.experiment, config.workload, config.outputDir);
+        await runBenchmark(config.experiment, config.workload, config.outputDir, config.auth);
 
         // Record end time (add 1 minute buffer to capture trailing metrics)
         const experimentEndTime = Date.now() + 60000;
 
         if (!config.skipMetrics) {
-          await collectMetrics(config.experiment, config.outputDir, experimentStartTime);
+          await collectMetrics(config.experiment, config.outputDir, experimentStartTime, config.architecture);
 
-          // Collect CloudWatch metrics for ECS/ALB (monolith and microservices only)
+          // Collect Lambda logs for FaaS architecture and cleanup log groups after collection
+          if (config.architecture === 'faas') {
+            await collectAndCleanupLambdaLogs(config, config.outputDir, experimentStartTime, experimentEndTime);
+          }
+
+          // Collect CloudWatch metrics for all architectures
           await collectCloudWatchMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
 
           // Collect pricing metrics for all architectures

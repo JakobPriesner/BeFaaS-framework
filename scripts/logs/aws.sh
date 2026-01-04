@@ -35,15 +35,7 @@ fi
 log_group_count=$(echo $log_groups | wc -w | tr -d ' ')
 echo "Found log groups: $log_group_count" | chalk green
 
-# Provide cost estimation context
-if [ -z "$timestamp_params" ]; then
-  echo "💰 Cost Warning: Collecting ALL logs from $log_group_count log groups may incur significant CloudWatch data transfer charges" | chalk red
-  echo "   Consider setting EXPERIMENT_START_TIME to reduce costs" | chalk red
-else
-  echo "💰 Cost Optimized: Using timestamp filtering to minimize data transfer charges" | chalk green
-fi
-
-# Setup timestamp filtering if available
+# Setup timestamp filtering if available (must be defined before use)
 timestamp_params=""
 if [ ! -z "${EXPERIMENT_START_TIME:-}" ]; then
   start_time_ms="${EXPERIMENT_START_TIME}"
@@ -74,7 +66,22 @@ fi
 # Fetch logs from all found log groups with pagination support
 for lg in $log_groups; do
   echo "Getting logs for log group $lg" | chalk magenta
-  for ls in $(aws logs describe-log-streams --log-group-name $lg | jq -r '.logStreams[].logStreamName'); do
+
+  # Filter log streams by time range if timestamps are available
+  if [ ! -z "${EXPERIMENT_START_TIME:-}" ] && [ ! -z "${EXPERIMENT_END_TIME:-}" ]; then
+    # Only get streams that have events within our time range
+    # A stream is relevant if: lastEventTimestamp >= start_time AND firstEventTimestamp <= end_time
+    streams=$(aws logs describe-log-streams --log-group-name $lg --order-by LastEventTime --descending | \
+      jq -r --arg start "$EXPERIMENT_START_TIME" --arg end "$EXPERIMENT_END_TIME" \
+      '.logStreams[] | select((.lastEventTimestamp // 0) >= ($start | tonumber) and (.firstEventTimestamp // 0) <= ($end | tonumber)) | .logStreamName')
+  else
+    streams=$(aws logs describe-log-streams --log-group-name $lg | jq -r '.logStreams[].logStreamName')
+  fi
+
+  stream_count=$(echo "$streams" | grep -c . || echo "0")
+  echo "Found $stream_count relevant log streams" | chalk blue
+
+  for ls in $streams; do
       echo "|--> Get Logs for log stream $ls" | chalk magenta
       newtoken="null"
       end=0

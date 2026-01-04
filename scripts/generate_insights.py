@@ -259,73 +259,6 @@ def calculate_percentiles(values):
         'p99_ms': round(float(np.percentile(arr, 99)), 2),
     }
 
-def filter_coldstarts(entries, warmup_seconds=60):
-    """Filter out requests during warmup period"""
-    if not entries['requests']:
-        return entries, 0
-
-    # Find the earliest timestamp
-    timestamps = []
-    for req in entries['requests']:
-        if req['timestamp']:
-            try:
-                ts = datetime.fromisoformat(req['timestamp'].replace('Z', '+00:00'))
-                timestamps.append(ts)
-            except:
-                pass
-
-    if not timestamps:
-        return entries, 0
-
-    min_ts = min(timestamps)
-    cutoff_ts = min_ts.timestamp() + warmup_seconds
-
-    filtered = {
-        'requests': [],
-        'function_calls': [],
-        'auth_checks': [],
-        'coldstarts': entries['coldstarts'],
-    }
-
-    removed_count = 0
-
-    for req in entries['requests']:
-        if req['timestamp']:
-            try:
-                ts = datetime.fromisoformat(req['timestamp'].replace('Z', '+00:00'))
-                if ts.timestamp() >= cutoff_ts:
-                    filtered['requests'].append(req)
-                else:
-                    removed_count += 1
-            except:
-                filtered['requests'].append(req)
-        else:
-            filtered['requests'].append(req)
-
-    for call in entries['function_calls']:
-        if call['timestamp']:
-            try:
-                ts = datetime.fromisoformat(call['timestamp'].replace('Z', '+00:00'))
-                if ts.timestamp() >= cutoff_ts:
-                    filtered['function_calls'].append(call)
-            except:
-                filtered['function_calls'].append(call)
-        else:
-            filtered['function_calls'].append(call)
-
-    for auth in entries['auth_checks']:
-        if auth['timestamp']:
-            try:
-                ts = datetime.fromisoformat(auth['timestamp'].replace('Z', '+00:00'))
-                if ts.timestamp() >= cutoff_ts:
-                    filtered['auth_checks'].append(auth)
-            except:
-                filtered['auth_checks'].append(auth)
-        else:
-            filtered['auth_checks'].append(auth)
-
-    return filtered, removed_count
-
 def analyze_http_status(requests):
     """Analyze HTTP status code distribution and response times"""
     status_counts = defaultdict(int)
@@ -769,11 +702,8 @@ def analyze_auth_chains(requests, auth_checks):
 
     return {'by_endpoint': result}
 
-def generate_insights(entries, warmup_seconds=60):
+def generate_insights(entries):
     """Generate complete insights from parsed entries"""
-    # Filter coldstarts
-    filtered_entries, removed_count = filter_coldstarts(entries, warmup_seconds)
-
     # Get time range
     timestamps = []
     for req in entries['requests']:
@@ -790,62 +720,40 @@ def generate_insights(entries, warmup_seconds=60):
         'duration_seconds': int((max(timestamps) - min(timestamps)).total_seconds()) if len(timestamps) > 1 else 0,
     }
 
-    def analyze_dataset(data_entries, label):
-        """Analyze a dataset (all data or filtered)"""
-        print(f"\nAnalyzing {label}...")
+    print(f"\nAnalyzing data...")
 
-        requests = data_entries['requests']
-        function_calls = data_entries['function_calls']
-        auth_checks = data_entries['auth_checks']
+    requests = entries['requests']
+    function_calls = entries['function_calls']
+    auth_checks = entries['auth_checks']
 
-        # Get unique endpoints and functions
-        endpoints = set(extract_endpoint(r.get('url', '')) for r in requests)
-        functions = set(c.get('function', '') for c in function_calls if c.get('function'))
+    # Get unique endpoints and functions
+    endpoints = set(extract_endpoint(r.get('url', '')) for r in requests)
+    functions = set(c.get('function', '') for c in function_calls if c.get('function'))
 
-        print(f"  Analyzing HTTP status...")
-        http_status = analyze_http_status(requests)
+    print(f"  Analyzing HTTP status...")
+    http_status = analyze_http_status(requests)
 
-        print(f"  Analyzing endpoints...")
-        endpoint_metrics = analyze_endpoints(requests)
-        endpoint_auth = analyze_endpoint_auth(requests, auth_checks)
-        endpoint_metrics['auth_times'] = endpoint_auth
+    print(f"  Analyzing endpoints...")
+    endpoint_metrics = analyze_endpoints(requests)
+    endpoint_auth = analyze_endpoint_auth(requests, auth_checks)
+    endpoint_metrics['auth_times'] = endpoint_auth
 
-        print(f"  Analyzing functions...")
-        function_metrics = analyze_functions(function_calls)
-        function_auth = analyze_function_auth(auth_checks)
-        function_metrics['auth_times'] = function_auth
+    print(f"  Analyzing functions...")
+    function_metrics = analyze_functions(function_calls)
+    function_auth = analyze_function_auth(auth_checks)
+    function_metrics['auth_times'] = function_auth
 
-        print(f"  Analyzing throughput...")
-        throughput = analyze_throughput(requests, auth_checks)
+    print(f"  Analyzing throughput...")
+    throughput = analyze_throughput(requests, auth_checks)
 
-        print(f"  Analyzing correlations...")
-        correlations = analyze_correlations(requests, auth_checks)
+    print(f"  Analyzing correlations...")
+    correlations = analyze_correlations(requests, auth_checks)
 
-        print(f"  Analyzing call chains...")
-        call_chains = analyze_call_chains(requests, function_calls)
+    print(f"  Analyzing call chains...")
+    call_chains = analyze_call_chains(requests, function_calls)
 
-        print(f"  Analyzing auth chains...")
-        auth_chains = analyze_auth_chains(requests, auth_checks)
-
-        return {
-            'overview': {
-                'total_requests': len(requests),
-                'total_auth_operations': len(auth_checks),
-                'unique_endpoints': len(endpoints),
-                'unique_functions': len(functions),
-            },
-            'http_status': http_status,
-            'endpoints': endpoint_metrics,
-            'functions': function_metrics,
-            'throughput': throughput,
-            'correlations': correlations,
-            'call_chain_breakdown': call_chains,
-            'auth_chain_breakdown': auth_chains,
-        }
-
-    # Analyze both datasets
-    all_data = analyze_dataset(entries, "all data")
-    without_coldstarts = analyze_dataset(filtered_entries, "data without coldstarts")
+    print(f"  Analyzing auth chains...")
+    auth_chains = analyze_auth_chains(requests, auth_checks)
 
     return {
         'meta': {
@@ -853,14 +761,20 @@ def generate_insights(entries, warmup_seconds=60):
             'total_log_entries': len(entries['requests']) + len(entries['function_calls']) + len(entries['auth_checks']),
             'total_requests': len(entries['requests']),
             'time_range': time_range,
-            'coldstart_filtering': {
-                'warmup_seconds': warmup_seconds,
-                'coldstarts_removed': removed_count,
-                'requests_after_filter': len(filtered_entries['requests']),
-            },
         },
-        'all_data': all_data,
-        'without_coldstarts': without_coldstarts,
+        'overview': {
+            'total_requests': len(requests),
+            'total_auth_operations': len(auth_checks),
+            'unique_endpoints': len(endpoints),
+            'unique_functions': len(functions),
+        },
+        'http_status': http_status,
+        'endpoints': endpoint_metrics,
+        'functions': function_metrics,
+        'throughput': throughput,
+        'correlations': correlations,
+        'call_chain_breakdown': call_chains,
+        'auth_chain_breakdown': auth_chains,
     }
 
 def main():
@@ -893,7 +807,6 @@ def main():
 
     print(f"\nInsights saved to: {output_path}")
     print(f"  Total requests analyzed: {insights['meta']['total_requests']}")
-    print(f"  Coldstarts filtered: {insights['meta']['coldstart_filtering']['coldstarts_removed']}")
 
 if __name__ == '__main__':
     main()
