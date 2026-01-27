@@ -10,8 +10,12 @@ RUN npm install --production
 
 # Copy all application code
 COPY index.js ./
+COPY call.js ./
 COPY functions/ ./functions/
 COPY auth/ ./auth/
+
+# Copy shared utilities (call.js requires ./shared/call)
+COPY shared/ ./shared/
 
 # Copy data directories (used by functions)
 COPY productcatalog/ ./productcatalog/

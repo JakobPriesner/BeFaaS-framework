@@ -85,11 +85,11 @@ resource "aws_cognito_user_pool_domain" "main" {
 
 # Local values to select between persistent and per-experiment Cognito
 locals {
-  cognito_user_pool_id = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_user_pool_id : aws_cognito_user_pool.main[0].id
-  cognito_client_id    = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_client_id : aws_cognito_user_pool_client.main[0].id
-  cognito_user_pool_arn = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_user_pool_arn : aws_cognito_user_pool.main[0].arn
+  cognito_user_pool_id       = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_user_pool_id : aws_cognito_user_pool.main[0].id
+  cognito_client_id          = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_client_id : aws_cognito_user_pool_client.main[0].id
+  cognito_user_pool_arn      = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_user_pool_arn : aws_cognito_user_pool.main[0].arn
   cognito_user_pool_endpoint = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_user_pool_endpoint : aws_cognito_user_pool.main[0].endpoint
-  cognito_domain = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_domain : aws_cognito_user_pool_domain.main[0].domain
+  cognito_domain             = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_domain : aws_cognito_user_pool_domain.main[0].domain
 }
 
 # Outputs

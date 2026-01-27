@@ -49,13 +49,13 @@ output "log_group_name" {
 }
 
 output "cognito_user_pool_id" {
-  description = "Cognito User Pool ID"
-  value       = aws_cognito_user_pool.main.id
+  description = "Cognito User Pool ID (from persistent pool)"
+  value       = local.cognito_user_pool_id
 }
 
 output "cognito_client_id" {
-  description = "Cognito Client ID"
-  value       = aws_cognito_user_pool_client.main.id
+  description = "Cognito Client ID (from persistent pool)"
+  value       = local.cognito_client_id
 }
 
 output "alb_arn" {

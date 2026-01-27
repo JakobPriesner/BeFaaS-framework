@@ -4,6 +4,9 @@
  * Pre-register users in Redis before running Artillery benchmarks.
  * This script runs inside the Docker container on the workload EC2.
  *
+ * Uses precomputed bcrypt hashes from users.csv for fast registration.
+ * Falls back to runtime hashing if passwordHash column is missing.
+ *
  * Environment variables:
  *   REDIS_ENDPOINT - Redis connection URL (redis://default:password@host:port)
  *   AUTH_MODE - Authentication mode (none, service-integrated-manual)
@@ -15,6 +18,7 @@ const crypto = require('crypto');
 
 const usersFile = '/workload/users.csv';
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS, 10) || 10;
+const BATCH_SIZE = 1000; // Larger batch size since no hashing needed
 
 /**
  * Parse Redis URL to get connection details
@@ -33,7 +37,7 @@ function parseRedisUrl(url) {
 }
 
 /**
- * Parse users.csv file
+ * Parse users.csv file - now includes passwordHash column
  */
 function parseUsersCSV() {
   const content = fs.readFileSync(usersFile, 'utf8');
@@ -42,47 +46,62 @@ function parseUsersCSV() {
 
   const userNameIndex = header.indexOf('userName');
   const passwordIndex = header.indexOf('password');
+  const passwordHashIndex = header.indexOf('passwordHash');
 
   if (userNameIndex === -1 || passwordIndex === -1) {
     throw new Error('users.csv must have userName and password columns');
   }
 
+  const hasPrecomputedHashes = passwordHashIndex !== -1;
   const users = [];
+
   for (let i = 1; i < lines.length; i++) {
     const fields = lines[i].split(',');
     if (fields.length > Math.max(userNameIndex, passwordIndex)) {
-      users.push({
+      const user = {
         userName: fields[userNameIndex],
         password: fields[passwordIndex]
-      });
+      };
+
+      if (hasPrecomputedHashes && fields[passwordHashIndex]) {
+        user.passwordHash = fields[passwordHashIndex];
+      }
+
+      users.push(user);
     }
   }
 
-  return users;
+  return { users, hasPrecomputedHashes };
 }
 
 /**
- * Simple bcrypt hash using bcryptjs (available in container via npm)
+ * Fallback: batch hash passwords using bcryptjs (only if CSV lacks hashes)
  */
-async function hashPassword(password) {
-  return new Promise((resolve, reject) => {
-    try {
-      const bcrypt = require('bcryptjs');
-      bcrypt.hash(password, BCRYPT_ROUNDS, (err, hash) => {
-        if (err) reject(err);
-        else resolve(hash);
+async function hashPasswordsBatch(passwords) {
+  try {
+    const bcrypt = require('bcryptjs');
+    const hashes = [];
+    for (const password of passwords) {
+      const hash = await new Promise((resolve, reject) => {
+        bcrypt.hash(password, BCRYPT_ROUNDS, (err, hash) => {
+          if (err) reject(err);
+          else resolve(hash);
+        });
       });
-    } catch (e) {
-      // Fallback if bcryptjs not available
-      const salt = `$2a$${BCRYPT_ROUNDS}$` + crypto.randomBytes(16).toString('base64').substring(0, 22);
-      const hash = salt + crypto.createHash('sha256').update(password + salt).digest('base64').substring(0, 31);
-      resolve(hash);
+      hashes.push(hash);
     }
-  });
+    return hashes;
+  } catch (e) {
+    // Fallback if bcryptjs not available
+    return passwords.map(password => {
+      const salt = `$2a$${BCRYPT_ROUNDS}$` + crypto.randomBytes(16).toString('base64').substring(0, 22);
+      return salt + crypto.createHash('sha256').update(password + salt).digest('base64').substring(0, 31);
+    });
+  }
 }
 
 /**
- * Redis client using RESP protocol
+ * Redis client using RESP protocol with pipelining support
  */
 class RedisClient {
   constructor(host, port, password) {
@@ -96,7 +115,7 @@ class RedisClient {
     return new Promise((resolve, reject) => {
       this.socket = new net.Socket();
       this.socket.setEncoding('utf8');
-      this.socket.setTimeout(30000);
+      this.socket.setTimeout(60000);
 
       this.socket.connect(this.port, this.host, async () => {
         if (this.password) {
@@ -115,13 +134,18 @@ class RedisClient {
     });
   }
 
+  buildCommand(args) {
+    let cmd = `*${args.length}\r\n`;
+    for (const arg of args) {
+      const strArg = String(arg);
+      cmd += `$${Buffer.byteLength(strArg)}\r\n${strArg}\r\n`;
+    }
+    return cmd;
+  }
+
   sendCommand(args) {
     return new Promise((resolve, reject) => {
-      let cmd = `*${args.length}\r\n`;
-      for (const arg of args) {
-        const strArg = String(arg);
-        cmd += `$${Buffer.byteLength(strArg)}\r\n${strArg}\r\n`;
-      }
+      const cmd = this.buildCommand(args);
 
       let response = '';
       const onData = (data) => {
@@ -146,29 +170,75 @@ class RedisClient {
     });
   }
 
+  /**
+   * Send multiple commands in a pipeline and wait for all responses
+   */
+  sendPipeline(commandsList) {
+    return new Promise((resolve, reject) => {
+      let pipeline = '';
+      for (const args of commandsList) {
+        pipeline += this.buildCommand(args);
+      }
+
+      const expectedResponses = commandsList.length;
+      let response = '';
+      let parsedCount = 0;
+      const results = [];
+
+      const onData = (data) => {
+        response += data;
+
+        while (parsedCount < expectedResponses) {
+          const result = this.parseResponseAt(response, 0);
+          if (!result.complete) break;
+
+          results.push(result.error ? { error: result.value } : { value: result.value });
+          response = response.substring(result.consumed);
+          parsedCount++;
+        }
+
+        if (parsedCount >= expectedResponses) {
+          this.socket.removeListener('data', onData);
+          resolve(results);
+        }
+      };
+
+      this.socket.on('data', onData);
+      this.socket.write(pipeline);
+    });
+  }
+
   parseResponse(data) {
-    const type = data[0];
-    const endIdx = data.indexOf('\r\n');
+    return this.parseResponseAt(data, 0);
+  }
+
+  parseResponseAt(data, offset) {
+    if (offset >= data.length) return { complete: false };
+
+    const type = data[offset];
+    const endIdx = data.indexOf('\r\n', offset);
     if (endIdx === -1) return { complete: false };
+
+    const consumed = () => endIdx - offset + 2;
 
     switch (type) {
       case '+':
-        return { complete: true, value: data.substring(1, endIdx) };
+        return { complete: true, value: data.substring(offset + 1, endIdx), consumed: consumed() };
       case '-':
-        return { complete: true, error: true, value: data.substring(1, endIdx) };
+        return { complete: true, error: true, value: data.substring(offset + 1, endIdx), consumed: consumed() };
       case ':':
-        return { complete: true, value: parseInt(data.substring(1, endIdx), 10) };
+        return { complete: true, value: parseInt(data.substring(offset + 1, endIdx), 10), consumed: consumed() };
       case '$':
-        const len = parseInt(data.substring(1, endIdx), 10);
-        if (len === -1) return { complete: true, value: null };
+        const len = parseInt(data.substring(offset + 1, endIdx), 10);
+        if (len === -1) return { complete: true, value: null, consumed: consumed() };
         const valueStart = endIdx + 2;
         const valueEnd = valueStart + len;
         if (data.length < valueEnd + 2) return { complete: false };
-        return { complete: true, value: data.substring(valueStart, valueEnd) };
+        return { complete: true, value: data.substring(valueStart, valueEnd), consumed: valueEnd + 2 - offset };
       case '*':
-        return { complete: true, value: 'OK' };
+        return { complete: true, value: 'OK', consumed: consumed() };
       default:
-        return { complete: true, value: data };
+        return { complete: true, value: data.substring(offset), consumed: data.length - offset };
     }
   }
 
@@ -176,13 +246,11 @@ class RedisClient {
     return this.sendCommand(['AUTH', password]);
   }
 
-  async set(key, value) {
-    return this.sendCommand(['SET', key, JSON.stringify(value)]);
-  }
-
-  async exists(key) {
-    const result = await this.sendCommand(['EXISTS', key]);
-    return result === 1;
+  async mset(keyValuePairs) {
+    const commands = keyValuePairs.map(({ key, value }) => {
+      return ['SET', key, JSON.stringify(value)];
+    });
+    return this.sendPipeline(commands);
   }
 
   close() {
@@ -192,30 +260,49 @@ class RedisClient {
   }
 }
 
-async function registerUser(redis, userName, password, authMode) {
-  const userKey = `user:${userName}`;
+/**
+ * Prepare user data for a batch of users
+ */
+async function prepareBatch(users, authMode, hasPrecomputedHashes) {
+  const createdAt = new Date().toISOString();
 
-  const existing = await redis.exists(userKey);
-  if (existing) {
-    return 'exists';
-  }
-
-  let userData;
   if (authMode === 'none') {
-    userData = { password };
+    return users.map(user => ({
+      key: `user:${user.userName}`,
+      value: { password: user.password }
+    }));
   } else if (authMode === 'service-integrated-manual') {
-    const passwordHash = await hashPassword(password);
-    userData = {
-      userName,
-      passwordHash,
-      createdAt: new Date().toISOString()
-    };
-  } else {
-    userData = { password };
-  }
+    // Use precomputed hashes if available
+    if (hasPrecomputedHashes && users.every(u => u.passwordHash)) {
+      return users.map(user => ({
+        key: `user:${user.userName}`,
+        value: {
+          userName: user.userName,
+          passwordHash: user.passwordHash,
+          createdAt
+        }
+      }));
+    }
 
-  await redis.set(userKey, userData);
-  return 'registered';
+    // Fallback: compute hashes at runtime (slow)
+    console.log('  Warning: Computing hashes at runtime (CSV lacks passwordHash column)');
+    const passwords = users.map(u => u.password);
+    const hashes = await hashPasswordsBatch(passwords);
+
+    return users.map((user, i) => ({
+      key: `user:${user.userName}`,
+      value: {
+        userName: user.userName,
+        passwordHash: hashes[i],
+        createdAt
+      }
+    }));
+  } else {
+    return users.map(user => ({
+      key: `user:${user.userName}`,
+      value: { password: user.password }
+    }));
+  }
 }
 
 async function main() {
@@ -231,11 +318,19 @@ async function main() {
   console.log('  Pre-registering Users in Redis');
   console.log('='.repeat(60));
   console.log(`Auth mode: ${authMode}`);
+  console.log(`Batch size: ${BATCH_SIZE}`);
 
   // Parse users
   console.log('\nReading users from users.csv...');
-  const users = parseUsersCSV();
-  console.log(`Found ${users.length} users to register`);
+  const { users, hasPrecomputedHashes } = parseUsersCSV();
+  console.log(`Found ${users.length} users`);
+
+  if (hasPrecomputedHashes) {
+    console.log('Using precomputed password hashes from CSV (fast mode)');
+  } else if (authMode === 'service-integrated-manual') {
+    console.log('Warning: No passwordHash column found - will compute hashes at runtime (slow)');
+    console.log('Tip: Run migrateUsers.js to add precomputed hashes to your users.csv');
+  }
 
   // Parse Redis URL
   const redisConfig = parseRedisUrl(redisEndpoint);
@@ -247,37 +342,48 @@ async function main() {
   await redis.connect();
   console.log('Connected to Redis');
 
-  // Register users
+  // Register users in batches
   console.log(`\nRegistering users...`);
+  const startTime = Date.now();
   let registered = 0;
-  let alreadyExists = 0;
   let failed = 0;
 
-  for (let i = 0; i < users.length; i++) {
-    const user = users[i];
+  const totalBatches = Math.ceil(users.length / BATCH_SIZE);
+
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    const start = batchIdx * BATCH_SIZE;
+    const end = Math.min(start + BATCH_SIZE, users.length);
+    const batch = users.slice(start, end);
+
     try {
-      const result = await registerUser(redis, user.userName, user.password, authMode);
-      if (result === 'registered') registered++;
-      else if (result === 'exists') alreadyExists++;
-    } catch (error) {
-      failed++;
-      if (failed <= 5) {
-        console.error(`Failed to register ${user.userName}: ${error.message}`);
+      const keyValuePairs = await prepareBatch(batch, authMode, hasPrecomputedHashes);
+      const results = await redis.mset(keyValuePairs);
+
+      for (const result of results) {
+        if (result.error) {
+          failed++;
+        } else {
+          registered++;
+        }
       }
+    } catch (error) {
+      failed += batch.length;
+      console.error(`\nBatch ${batchIdx + 1} failed: ${error.message}`);
     }
 
-    if ((i + 1) % 100 === 0 || i === users.length - 1) {
-      process.stdout.write(`\rProgress: ${i + 1}/${users.length} (${Math.round((i + 1) / users.length * 100)}%)`);
-    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    process.stdout.write(`\rProgress: ${end}/${users.length} (${Math.round(end / users.length * 100)}%) - ${elapsed}s`);
   }
 
+  const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log('\n');
   redis.close();
 
   console.log('Results:');
   console.log(`  Registered: ${registered}`);
-  console.log(`  Already existed: ${alreadyExists}`);
   console.log(`  Failed: ${failed}`);
+  console.log(`  Time: ${totalElapsed}s`);
+  console.log(`  Rate: ${Math.round(registered / parseFloat(totalElapsed))} users/sec`);
   console.log('='.repeat(60));
 
   if (failed > 0 && failed === users.length) {

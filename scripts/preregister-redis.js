@@ -3,6 +3,9 @@
 /**
  * Pre-register users in Redis for auth modes that use Redis for user storage.
  *
+ * Uses precomputed bcrypt hashes from users.csv for fast registration.
+ * Falls back to runtime hashing if passwordHash column is missing.
+ *
  * Supports:
  * - 'none' auth mode: stores plain passwords
  * - 'service-integrated-manual' auth mode: stores bcrypt hashed passwords
@@ -20,7 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
 const net = require('net');
 
 const projectRoot = path.join(__dirname, '..');
@@ -28,6 +31,7 @@ const usersFile = path.join(projectRoot, 'artillery', 'users.csv');
 
 // bcrypt constants
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS, 10) || 10;
+const BATCH_SIZE = 1000; // Larger batch size since no hashing needed with precomputed hashes
 
 /**
  * Parse command line arguments
@@ -121,7 +125,7 @@ function parseRedisUrl(url) {
 }
 
 /**
- * Parse users.csv file
+ * Parse users.csv file - now includes passwordHash column
  */
 function parseUsersCSV(limit = null) {
   const content = fs.readFileSync(usersFile, 'utf8');
@@ -130,84 +134,83 @@ function parseUsersCSV(limit = null) {
 
   const userNameIndex = header.indexOf('userName');
   const passwordIndex = header.indexOf('password');
+  const passwordHashIndex = header.indexOf('passwordHash');
 
   if (userNameIndex === -1 || passwordIndex === -1) {
     throw new Error('users.csv must have userName and password columns');
   }
 
+  const hasPrecomputedHashes = passwordHashIndex !== -1;
   const users = [];
   const maxLines = limit ? Math.min(limit + 1, lines.length) : lines.length;
 
   for (let i = 1; i < maxLines; i++) {
     const fields = lines[i].split(',');
     if (fields.length > Math.max(userNameIndex, passwordIndex)) {
-      users.push({
+      const user = {
         userName: fields[userNameIndex],
         password: fields[passwordIndex]
-      });
+      };
+
+      if (hasPrecomputedHashes && fields[passwordHashIndex]) {
+        user.passwordHash = fields[passwordHashIndex];
+      }
+
+      users.push(user);
     }
   }
 
-  return users;
+  return { users, hasPrecomputedHashes };
 }
 
 /**
- * Simple bcrypt implementation
- * Uses the same algorithm as bcryptjs library
+ * Batch hash passwords in parallel using worker processes (fallback only)
  */
-class Bcrypt {
-  static BASE64_TABLE = './ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+async function hashPasswordsBatch(passwords, rounds) {
+  const escapedPasswords = passwords.map(p => p.replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+  const bcryptScript = `
+    const bcrypt = require('bcryptjs');
+    const passwords = ${JSON.stringify(escapedPasswords)};
+    const rounds = ${rounds};
 
-  static generateSalt(rounds = 10) {
-    const crypto = require('crypto');
-    const randomBytes = crypto.randomBytes(16);
-    let salt = '$2a$' + (rounds < 10 ? '0' : '') + rounds + '$';
-
-    // bcrypt base64 encoding
-    for (let i = 0; i < 16; i += 3) {
-      const b1 = randomBytes[i];
-      const b2 = i + 1 < 16 ? randomBytes[i + 1] : 0;
-      const b3 = i + 2 < 16 ? randomBytes[i + 2] : 0;
-
-      salt += this.BASE64_TABLE[b1 >> 2];
-      salt += this.BASE64_TABLE[((b1 & 0x03) << 4) | (b2 >> 4)];
-      salt += this.BASE64_TABLE[((b2 & 0x0f) << 2) | (b3 >> 6)];
-      salt += this.BASE64_TABLE[b3 & 0x3f];
+    async function hashAll() {
+      const results = [];
+      for (const pwd of passwords) {
+        const hash = await bcrypt.hash(pwd, rounds);
+        results.push(hash);
+      }
+      console.log(JSON.stringify(results));
     }
+    hashAll().catch(e => { console.error(e); process.exit(1); });
+  `;
 
-    return salt.substring(0, 29);
-  }
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', ['-e', bcryptScript], {
+      cwd: projectRoot,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
 
-  static async hash(password, rounds = 10) {
-    // For simplicity, we'll use a spawned process to call bcryptjs
-    // This ensures compatibility with the bcryptjs library used in the Lambda functions
-    const bcryptScript = `
-      const bcrypt = require('bcryptjs');
-      bcrypt.hash('${password.replace(/'/g, "\\'")}', ${rounds}, (err, hash) => {
-        if (err) process.exit(1);
-        process.stdout.write(hash);
-      });
-    `;
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', data => stdout += data);
+    child.stderr.on('data', data => stderr += data);
 
-    try {
-      const result = execSync(`node -e "${bcryptScript}"`, {
-        cwd: projectRoot,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-      return result;
-    } catch (error) {
-      // If bcryptjs is not available, fall back to native crypto-based hash
-      console.warn('bcryptjs not available, using fallback hash');
-      const crypto = require('crypto');
-      const salt = this.generateSalt(rounds);
-      return salt + crypto.createHash('sha256').update(password + salt).digest('base64').substring(0, 31);
-    }
-  }
+    child.on('close', code => {
+      if (code !== 0) {
+        reject(new Error(`bcrypt process failed: ${stderr}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout.trim()));
+      } catch (e) {
+        reject(new Error(`Failed to parse bcrypt output: ${stdout}`));
+      }
+    });
+  });
 }
 
 /**
- * Redis client using RESP protocol
+ * Redis client using RESP protocol with pipelining support
  */
 class RedisClient {
   constructor(host, port, password) {
@@ -215,13 +218,13 @@ class RedisClient {
     this.port = port;
     this.password = password;
     this.socket = null;
-    this.buffer = '';
   }
 
   async connect() {
     return new Promise((resolve, reject) => {
       this.socket = new net.Socket();
       this.socket.setEncoding('utf8');
+      this.socket.setTimeout(60000);
 
       this.socket.connect(this.port, this.host, async () => {
         if (this.password) {
@@ -236,23 +239,27 @@ class RedisClient {
       });
 
       this.socket.on('error', reject);
+      this.socket.on('timeout', () => reject(new Error('Connection timeout')));
     });
+  }
+
+  buildCommand(args) {
+    let cmd = `*${args.length}\r\n`;
+    for (const arg of args) {
+      const strArg = String(arg);
+      cmd += `$${Buffer.byteLength(strArg)}\r\n${strArg}\r\n`;
+    }
+    return cmd;
   }
 
   sendCommand(args) {
     return new Promise((resolve, reject) => {
-      // Build RESP command
-      let cmd = `*${args.length}\r\n`;
-      for (const arg of args) {
-        const strArg = String(arg);
-        cmd += `$${Buffer.byteLength(strArg)}\r\n${strArg}\r\n`;
-      }
+      const cmd = this.buildCommand(args);
 
       let response = '';
       const onData = (data) => {
         response += data;
 
-        // Parse RESP response
         try {
           const result = this.parseResponse(response);
           if (result.complete) {
@@ -273,29 +280,75 @@ class RedisClient {
     });
   }
 
+  /**
+   * Send multiple commands in a pipeline and wait for all responses
+   */
+  sendPipeline(commandsList) {
+    return new Promise((resolve, reject) => {
+      let pipeline = '';
+      for (const args of commandsList) {
+        pipeline += this.buildCommand(args);
+      }
+
+      const expectedResponses = commandsList.length;
+      let response = '';
+      let parsedCount = 0;
+      const results = [];
+
+      const onData = (data) => {
+        response += data;
+
+        while (parsedCount < expectedResponses) {
+          const result = this.parseResponseAt(response, 0);
+          if (!result.complete) break;
+
+          results.push(result.error ? { error: result.value } : { value: result.value });
+          response = response.substring(result.consumed);
+          parsedCount++;
+        }
+
+        if (parsedCount >= expectedResponses) {
+          this.socket.removeListener('data', onData);
+          resolve(results);
+        }
+      };
+
+      this.socket.on('data', onData);
+      this.socket.write(pipeline);
+    });
+  }
+
   parseResponse(data) {
-    const type = data[0];
-    const endIdx = data.indexOf('\r\n');
+    return this.parseResponseAt(data, 0);
+  }
+
+  parseResponseAt(data, offset) {
+    if (offset >= data.length) return { complete: false };
+
+    const type = data[offset];
+    const endIdx = data.indexOf('\r\n', offset);
     if (endIdx === -1) return { complete: false };
 
+    const consumed = () => endIdx - offset + 2;
+
     switch (type) {
-      case '+': // Simple string
-        return { complete: true, value: data.substring(1, endIdx) };
-      case '-': // Error
-        return { complete: true, error: true, value: data.substring(1, endIdx) };
-      case ':': // Integer
-        return { complete: true, value: parseInt(data.substring(1, endIdx), 10) };
-      case '$': // Bulk string
-        const len = parseInt(data.substring(1, endIdx), 10);
-        if (len === -1) return { complete: true, value: null };
+      case '+':
+        return { complete: true, value: data.substring(offset + 1, endIdx), consumed: consumed() };
+      case '-':
+        return { complete: true, error: true, value: data.substring(offset + 1, endIdx), consumed: consumed() };
+      case ':':
+        return { complete: true, value: parseInt(data.substring(offset + 1, endIdx), 10), consumed: consumed() };
+      case '$':
+        const len = parseInt(data.substring(offset + 1, endIdx), 10);
+        if (len === -1) return { complete: true, value: null, consumed: consumed() };
         const valueStart = endIdx + 2;
         const valueEnd = valueStart + len;
         if (data.length < valueEnd + 2) return { complete: false };
-        return { complete: true, value: data.substring(valueStart, valueEnd) };
-      case '*': // Array
-        return { complete: true, value: 'OK' }; // Simplified for our use case
+        return { complete: true, value: data.substring(valueStart, valueEnd), consumed: valueEnd + 2 - offset };
+      case '*':
+        return { complete: true, value: 'OK', consumed: consumed() };
       default:
-        return { complete: true, value: data };
+        return { complete: true, value: data.substring(offset), consumed: data.length - offset };
     }
   }
 
@@ -303,19 +356,12 @@ class RedisClient {
     return this.sendCommand(['AUTH', password]);
   }
 
-  async set(key, value) {
-    const jsonValue = JSON.stringify(value);
-    return this.sendCommand(['SET', key, jsonValue]);
-  }
-
-  async get(key) {
-    const result = await this.sendCommand(['GET', key]);
-    return result ? JSON.parse(result) : null;
-  }
-
-  async exists(key) {
-    const result = await this.sendCommand(['EXISTS', key]);
-    return result === 1;
+  async mset(keyValuePairs) {
+    const commands = keyValuePairs.map(({ key, value }) => {
+      const jsonValue = JSON.stringify(value);
+      return ['SET', key, jsonValue];
+    });
+    return this.sendPipeline(commands);
   }
 
   close() {
@@ -326,34 +372,48 @@ class RedisClient {
 }
 
 /**
- * Register a single user in Redis
+ * Prepare user data for a batch of users
  */
-async function registerUser(redis, userName, password, authMode) {
-  const userKey = `user:${userName}`;
+async function prepareBatch(users, authMode, hasPrecomputedHashes) {
+  const createdAt = new Date().toISOString();
 
-  // Check if user already exists
-  const existing = await redis.exists(userKey);
-  if (existing) {
-    return { status: 'exists' };
-  }
-
-  // Prepare user data based on auth mode
-  let userData;
   if (authMode === 'none') {
-    // Store plain password
-    userData = { password };
+    return users.map(user => ({
+      key: `user:${user.userName}`,
+      value: { password: user.password }
+    }));
   } else if (authMode === 'service-integrated-manual') {
-    // Store bcrypt hashed password
-    const passwordHash = await Bcrypt.hash(password, BCRYPT_ROUNDS);
-    userData = {
-      userName,
-      passwordHash,
-      createdAt: new Date().toISOString()
-    };
+    // Use precomputed hashes if available
+    if (hasPrecomputedHashes && users.every(u => u.passwordHash)) {
+      return users.map(user => ({
+        key: `user:${user.userName}`,
+        value: {
+          userName: user.userName,
+          passwordHash: user.passwordHash,
+          createdAt
+        }
+      }));
+    }
+
+    // Fallback: compute hashes at runtime (slow)
+    console.log('  Warning: Computing hashes at runtime (CSV lacks passwordHash column)');
+    const passwords = users.map(u => u.password);
+    const hashes = await hashPasswordsBatch(passwords, BCRYPT_ROUNDS);
+
+    return users.map((user, i) => ({
+      key: `user:${user.userName}`,
+      value: {
+        userName: user.userName,
+        passwordHash: hashes[i],
+        createdAt
+      }
+    }));
   }
 
-  await redis.set(userKey, userData);
-  return { status: 'registered' };
+  return users.map(user => ({
+    key: `user:${user.userName}`,
+    value: { password: user.password }
+  }));
 }
 
 async function main() {
@@ -363,11 +423,19 @@ async function main() {
   console.log('  Pre-registering Users in Redis');
   console.log('='.repeat(60));
   console.log(`\nAuth mode: ${config.auth}`);
+  console.log(`Batch size: ${BATCH_SIZE}`);
 
   // Parse users
   console.log('\nReading users from users.csv...');
-  const users = parseUsersCSV(config.limit);
+  const { users, hasPrecomputedHashes } = parseUsersCSV(config.limit);
   console.log(`Found ${users.length} users to register`);
+
+  if (hasPrecomputedHashes) {
+    console.log('Using precomputed password hashes from CSV (fast mode)');
+  } else if (config.auth === 'service-integrated-manual') {
+    console.log('Warning: No passwordHash column found - will compute hashes at runtime (slow)');
+    console.log('Tip: Run artillery/migrateUsers.js to add precomputed hashes to your users.csv');
+  }
 
   // Get Redis endpoint
   console.log('\nGetting Redis endpoint from Terraform...');
@@ -381,32 +449,40 @@ async function main() {
   await redis.connect();
   console.log('Connected to Redis');
 
-  // Register users
+  // Register users in batches
   console.log(`\nRegistering users (${config.auth} mode)...`);
+  const startTime = Date.now();
   let registered = 0;
-  let alreadyExists = 0;
   let failed = 0;
 
-  for (let i = 0; i < users.length; i++) {
-    const user = users[i];
+  const totalBatches = Math.ceil(users.length / BATCH_SIZE);
+
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    const start = batchIdx * BATCH_SIZE;
+    const end = Math.min(start + BATCH_SIZE, users.length);
+    const batch = users.slice(start, end);
+
     try {
-      const result = await registerUser(redis, user.userName, user.password, config.auth);
-      if (result.status === 'registered') {
-        registered++;
-      } else if (result.status === 'exists') {
-        alreadyExists++;
+      const keyValuePairs = await prepareBatch(batch, config.auth, hasPrecomputedHashes);
+      const results = await redis.mset(keyValuePairs);
+
+      for (const result of results) {
+        if (result.error) {
+          failed++;
+        } else {
+          registered++;
+        }
       }
     } catch (error) {
-      failed++;
-      console.error(`Failed to register ${user.userName}: ${error.message}`);
+      failed += batch.length;
+      console.error(`\nBatch ${batchIdx + 1} failed: ${error.message}`);
     }
 
-    // Progress update
-    if ((i + 1) % 100 === 0 || i === users.length - 1) {
-      process.stdout.write(`\rProgress: ${i + 1}/${users.length} (${Math.round((i + 1) / users.length * 100)}%)`);
-    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    process.stdout.write(`\rProgress: ${end}/${users.length} (${Math.round(end / users.length * 100)}%) - ${elapsed}s`);
   }
 
+  const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log('\n');
 
   // Close Redis connection
@@ -415,8 +491,9 @@ async function main() {
   // Summary
   console.log('Results:');
   console.log(`  Registered: ${registered}`);
-  console.log(`  Already existed: ${alreadyExists}`);
   console.log(`  Failed: ${failed}`);
+  console.log(`  Time: ${totalElapsed}s`);
+  console.log(`  Rate: ${Math.round(registered / parseFloat(totalElapsed))} users/sec`);
 
   console.log('\n' + '='.repeat(60));
   console.log('  Pre-registration Complete');

@@ -2,6 +2,8 @@
 
 config:
   target: ' '
+  http:
+    timeout: 30  # 30 second timeout for HTTP requests
   phases:
     - name: 'Warm-up'
       duration: 300
@@ -21,10 +23,13 @@ config:
       duration: 120
       arrivalRate: 50
       rampTo: 200
-    - name: 'Cool-down'
-      duration: 900
+    - name: 'Step Down'
+      duration: 120
       arrivalRate: 200
       rampTo: 5
+    - name: 'Cool-down'
+      duration: 780
+      arrivalRate: 5
   processor: '{{ $processEnvironment.PROCESSOR_DIR }}/logger.js'
 
   payload:
@@ -32,8 +37,7 @@ config:
     fields:
       - 'userName'
       - 'password'
-    loadAll: true
-    order: 'sequence' # Ensure each user is used, reproducible
+    order: 'sequence' # Ensure each user is used in order, reproducible
   variables:
     product:
       - 'QWERTY'
@@ -42,7 +46,8 @@ config:
 
 scenarios:
   - name: 'Anonymous Browse Flow'
-    weight: 80
+    weight: 75
+    beforeScenario: 'beforeScenario'
     flow:
       - get:
           name: 'load homepage'
@@ -58,7 +63,8 @@ scenarios:
           - think: 2
         count: 3
   - name: 'Authenticated Session Flow'
-    weight: 20
+    weight: 21.5
+    beforeScenario: 'beforeScenario'
     flow:
       - post:
           name: 'login'
@@ -101,6 +107,7 @@ scenarios:
                 quantity: 1
               headers:
                 Authorization: 'Bearer {{ token }}'
+                Accept: 'application/json'
               beforeRequest: 'beforeAuthRequest'
               afterResponse: 'afterAuthResponse'
               expect:
@@ -119,7 +126,7 @@ scenarios:
           headers:
             Authorization: 'Bearer {{ token }}'
           url: '{{ frontend }}/checkout'
-          followRedirect: true
+          followRedirect: false
           form:
             email: 'blubb@blubbmail.com'
             street_address: 'awesome street'
@@ -135,3 +142,44 @@ scenarios:
           afterResponse: 'afterAuthResponse'
           expect:
             - statusCode: 200
+  - name: 'Failed Auth - Missing Token'
+    weight: 0.5
+    beforeScenario: 'beforeScenario'
+    flow:
+      - get:
+          name: 'access protected resource without token'
+          url: '{{ frontend }}/cart'
+          beforeRequest: 'beforeFailedAuthRequest'
+          afterResponse: 'afterFailedAuthResponse'
+          expect:
+            - statusCode: 401
+  - name: 'Failed Auth - Wrong login'
+    weight: 2
+    beforeScenario: 'beforeScenario'
+    flow:
+      - post:
+          name: 'login'
+          url: '{{ frontend }}/setUser'
+          json:
+            userName: '{{ userName }}'
+            password: 'WrongPassword :)'
+          headers:
+            Accept: 'application/json'
+          expect:
+            - statusCode: 401
+          followRedirect: false
+          beforeRequest: 'beforeFailedAuthRequest'
+          afterResponse: 'afterFailedAuthResponse'
+  - name: 'Failed Auth - Expired Token'
+    weight: 1
+    beforeScenario: 'beforeScenario'
+    flow:
+      - get:
+          name: 'access protected resource with expired token'
+          url: '{{ frontend }}/cart'
+          headers:
+            Authorization: 'Bearer {{ expiredToken }}'
+          beforeRequest: 'beforeFailedAuthRequest'
+          afterResponse: 'afterFailedAuthResponse'
+          expect:
+            - statusCode: 401

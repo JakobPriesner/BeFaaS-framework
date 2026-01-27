@@ -3,7 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { logSection } = require('./utils');
 
-async function runBenchmark(experiment, workload, outputDir) {
+async function runBenchmark(experiment, workload, outputDir, authMode = 'none', architecture = 'faas') {
   logSection('Running Benchmark');
 
   const projectRoot = path.join(__dirname, '..', '..');
@@ -44,6 +44,7 @@ async function runBenchmark(experiment, workload, outputDir) {
 
   console.log(`Using workload: ${workloadConfigName}`);
   console.log(`Output directory: ${outputDir}`);
+  console.log(`Auth mode: ${authMode}`);
 
   // Run the workload.sh script and capture logs
   const logFile = path.join(outputDir, 'workload.log');
@@ -61,7 +62,8 @@ async function runBenchmark(experiment, workload, outputDir) {
     const child = spawn(workloadScript, scriptArgs, {
       cwd: projectRoot,
       stdio: ['inherit', 'pipe', 'pipe'],
-      shell: '/bin/bash'
+      shell: '/bin/bash',
+      env: { ...process.env, AUTH_MODE: authMode, ARCHITECTURE: architecture }
     });
 
     // Pipe output to both console and workload.log

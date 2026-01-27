@@ -13,6 +13,13 @@ locals {
   run_id        = data.terraform_remote_state.exp.outputs.run_id
   fns           = data.terraform_remote_state.exp.outputs.aws_fns
   fns_async     = data.terraform_remote_state.exp.outputs.aws_fns_async
+
+  # Build a map of function names for direct Lambda invocation
+  # Format: LAMBDA_FN_FUNCTIONNAME = full-function-name
+  lambda_fn_env_vars = {
+    for key, _ in data.terraform_remote_state.exp.outputs.aws_fns :
+    "LAMBDA_FN_${upper(key)}" => "${local.project_name}-${key}"
+  }
 }
 
 resource "aws_iam_role" "lambda_exec" {
@@ -69,6 +76,14 @@ resource "aws_iam_policy" "policy" {
       ],
       "Effect": "Allow",
       "Resource": "*"
+    },
+    {
+      "Sid": "LambdaDirectInvoke",
+      "Action": [
+        "lambda:InvokeFunction"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:lambda:*:*:function:${local.project_name}-*"
     }
   ]
 }
@@ -92,7 +107,7 @@ resource "aws_lambda_function" "fn" {
 
   s3_bucket        = aws_s3_object.source[each.key].bucket
   s3_key           = aws_s3_object.source[each.key].key
-  source_code_hash = filebase64sha256(each.value)
+  source_code_hash = try(filebase64sha256(each.value), null)
 
   handler     = var.handler
   runtime     = "nodejs18.x"
@@ -108,12 +123,17 @@ resource "aws_lambda_function" "fn" {
   }
 
   environment {
-    variables = merge({
-      BEFAAS_DEPLOYMENT_ID = local.deployment_id
-      BEFAAS_FN_NAME       = each.key
-      COGNITO_USER_POOL_ID = local.cognito_user_pool_id
-      COGNITO_CLIENT_ID    = local.cognito_client_id
-    }, var.fn_env)
+    variables = merge(
+      {
+        BEFAAS_DEPLOYMENT_ID = local.deployment_id
+        BEFAAS_FN_NAME       = each.key
+        COGNITO_USER_POOL_ID = local.cognito_user_pool_id
+        COGNITO_CLIENT_ID    = local.cognito_client_id
+      },
+      # Add all Lambda function names for direct invocation (bypasses API Gateway)
+      local.lambda_fn_env_vars,
+      var.fn_env
+    )
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda_logs]

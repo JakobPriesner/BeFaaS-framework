@@ -16,15 +16,15 @@ output "lambda_function_arns" {
 
 output "lambda_memory_size" {
   description = "Memory size configured for Lambda functions (MB)"
-  value = var.memory_size
+  value       = var.memory_size
 }
 
 output "api_gateway_id" {
   description = "API Gateway v2 API ID"
-  value = data.terraform_remote_state.ep.outputs.aws_apigatewayv2_api.id
+  value       = data.terraform_remote_state.ep.outputs.aws_apigatewayv2_api.id
 }
 
 output "api_gateway_name" {
   description = "API Gateway v2 API Name"
-  value = data.terraform_remote_state.ep.outputs.aws_apigatewayv2_api.name
+  value       = data.terraform_remote_state.ep.outputs.aws_apigatewayv2_api.name
 }

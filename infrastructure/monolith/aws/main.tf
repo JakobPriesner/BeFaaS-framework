@@ -43,56 +43,23 @@ data "terraform_remote_state" "redis" {
   }
 }
 
+# Reference persistent Cognito pool
+data "terraform_remote_state" "cognito" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../../services/cognito/terraform.tfstate"
+  }
+}
+
 locals {
-  project_name = data.terraform_remote_state.exp.outputs.project_name
-  subnet_ids   = data.aws_subnets.default.ids
-  vpc_id       = data.aws_vpc.default.id
-  redis_url    = data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT
-}
-
-# Cognito User Pool for authentication
-resource "aws_cognito_user_pool" "main" {
-  name = "${local.project_name}-monolith-user-pool"
-
-  password_policy {
-    minimum_length                   = 8
-    require_lowercase                = true
-    require_uppercase                = true
-    require_numbers                  = true
-    require_symbols                  = false
-    temporary_password_validity_days = 7
-  }
-
-  tags = {
-    Project      = local.project_name
-    Architecture = "monolith"
-  }
-}
-
-# Cognito User Pool Client
-resource "aws_cognito_user_pool_client" "main" {
-  name         = "${local.project_name}-monolith-client"
-  user_pool_id = aws_cognito_user_pool.main.id
-
-  access_token_validity  = 60
-  id_token_validity      = 60
-  refresh_token_validity = 30
-
-  token_validity_units {
-    access_token  = "minutes"
-    id_token      = "minutes"
-    refresh_token = "days"
-  }
-
-  explicit_auth_flows = [
-    "ALLOW_USER_PASSWORD_AUTH",
-    "ALLOW_REFRESH_TOKEN_AUTH",
-    "ALLOW_USER_SRP_AUTH",
-    "ALLOW_ADMIN_USER_PASSWORD_AUTH"
-  ]
-
-  generate_secret               = false
-  prevent_user_existence_errors = "ENABLED"
+  project_name         = data.terraform_remote_state.exp.outputs.project_name
+  subnet_ids           = data.aws_subnets.default.ids
+  vpc_id               = data.aws_vpc.default.id
+  redis_url            = data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT
+  cognito_user_pool_id = data.terraform_remote_state.cognito.outputs.cognito_user_pool_id
+  cognito_client_id    = data.terraform_remote_state.cognito.outputs.cognito_client_id
+  cognito_pool_arn     = data.terraform_remote_state.cognito.outputs.cognito_user_pool_arn
 }
 
 
@@ -214,7 +181,7 @@ resource "aws_iam_role_policy" "ecs_task_cognito" {
           "cognito-idp:AdminCreateUser",
           "cognito-idp:AdminSetUserPassword"
         ]
-        Resource = aws_cognito_user_pool.main.arn
+        Resource = local.cognito_pool_arn
       }
     ]
   })
@@ -385,7 +352,7 @@ resource "aws_ecs_task_definition" "monolith" {
           value = "production"
         },
         {
-          name  = "REDIS_URL"
+          name  = "REDIS_ENDPOINT"
           value = local.redis_url
         },
         {
@@ -394,11 +361,11 @@ resource "aws_ecs_task_definition" "monolith" {
         },
         {
           name  = "COGNITO_USER_POOL_ID"
-          value = aws_cognito_user_pool.main.id
+          value = local.cognito_user_pool_id
         },
         {
           name  = "COGNITO_CLIENT_ID"
-          value = aws_cognito_user_pool_client.main.id
+          value = local.cognito_client_id
         }
       ]
 
@@ -454,5 +421,45 @@ resource "aws_ecs_service" "monolith" {
   tags = {
     Project = local.project_name
     Service = "monolith"
+  }
+
+  # Ignore changes to desired_count as it's managed by auto-scaling
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+}
+
+# Auto-Scaling Target
+resource "aws_appautoscaling_target" "monolith" {
+  max_capacity       = var.max_capacity
+  min_capacity       = var.min_capacity
+  resource_id        = "service/${aws_ecs_cluster.monolith.name}/${aws_ecs_service.monolith.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+
+  depends_on = [aws_ecs_service.monolith]
+}
+
+# Auto-Scaling Policy - Target Tracking on CPU
+resource "aws_appautoscaling_policy" "monolith_cpu" {
+  name               = "${local.project_name}-monolith-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.monolith.resource_id
+  scalable_dimension = aws_appautoscaling_target.monolith.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.monolith.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+
+    target_value = var.target_cpu_utilization
+
+    # Scale-out cooldown: 60s (Fast Response)
+    scale_out_cooldown = var.scale_out_cooldown
+
+    # Scale-in cooldown: 300s (Slow Shrinkage)
+    # Verhältnis T_in/T_out = 300/60 = 5.0 (exceeds minimum of 3.0)
+    scale_in_cooldown = var.scale_in_cooldown
   }
 }

@@ -43,10 +43,24 @@ data "terraform_remote_state" "redis" {
   }
 }
 
+# Reference persistent Cognito state
+data "terraform_remote_state" "cognito" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../../services/cognito/terraform.tfstate"
+  }
+}
+
 locals {
   project_name = data.terraform_remote_state.exp.outputs.project_name
   subnet_ids   = data.aws_subnets.default.ids
   redis_url    = data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT
+
+  # Always use persistent Cognito pool
+  cognito_user_pool_id  = data.terraform_remote_state.cognito.outputs.cognito_user_pool_id
+  cognito_client_id     = data.terraform_remote_state.cognito.outputs.cognito_client_id
+  cognito_user_pool_arn = data.terraform_remote_state.cognito.outputs.cognito_user_pool_arn
 }
 
 locals {
@@ -56,84 +70,39 @@ locals {
     "frontend-service" = {
       port           = 3000
       container_port = 3000
-      cpu            = 256
-      memory         = 512
+      cpu            = var.cpu
+      memory         = var.memory
       desired_count  = 1
     }
     "product-service" = {
       port           = 3001
       container_port = 3001
-      cpu            = 256
-      memory         = 512
+      cpu            = var.cpu
+      memory         = var.memory
       desired_count  = 1
     }
     "cart-service" = {
       port           = 3002
       container_port = 3002
-      cpu            = 256
-      memory         = 512
+      cpu            = var.cpu
+      memory         = var.memory
       desired_count  = 1
     }
     "order-service" = {
       port           = 3003
       container_port = 3003
-      cpu            = 256
-      memory         = 512
+      cpu            = var.cpu
+      memory         = var.memory
       desired_count  = 1
     }
     "content-service" = {
       port           = 3004
       container_port = 3004
-      cpu            = 256
-      memory         = 512
+      cpu            = var.cpu
+      memory         = var.memory
       desired_count  = 1
     }
   }
-}
-
-# Cognito User Pool for authentication
-resource "aws_cognito_user_pool" "main" {
-  name = "${local.project_name}-microservices-user-pool"
-
-  password_policy {
-    minimum_length                   = 8
-    require_lowercase                = true
-    require_uppercase                = true
-    require_numbers                  = true
-    require_symbols                  = false
-    temporary_password_validity_days = 7
-  }
-
-  tags = {
-    Project      = local.project_name
-    Architecture = "microservices"
-  }
-}
-
-# Cognito User Pool Client
-resource "aws_cognito_user_pool_client" "main" {
-  name         = "${local.project_name}-microservices-client"
-  user_pool_id = aws_cognito_user_pool.main.id
-
-  access_token_validity  = 60
-  id_token_validity      = 60
-  refresh_token_validity = 30
-
-  token_validity_units {
-    access_token  = "minutes"
-    id_token      = "minutes"
-    refresh_token = "days"
-  }
-
-  explicit_auth_flows = [
-    "ALLOW_USER_PASSWORD_AUTH",
-    "ALLOW_REFRESH_TOKEN_AUTH",
-    "ALLOW_USER_SRP_AUTH",
-    "ALLOW_ADMIN_USER_PASSWORD_AUTH"
-  ]
-
-  generate_secret               = false
-  prevent_user_existence_errors = "ENABLED"
 }
 
 # ECS Cluster
@@ -239,7 +208,7 @@ resource "aws_iam_role_policy" "ecs_task_cognito" {
           "cognito-idp:AdminCreateUser",
           "cognito-idp:AdminSetUserPassword"
         ]
-        Resource = aws_cognito_user_pool.main.arn
+        Resource = local.cognito_user_pool_arn
       }
     ]
   })
@@ -345,11 +314,11 @@ resource "aws_ecs_task_definition" "service" {
         },
         {
           name  = "COGNITO_USER_POOL_ID"
-          value = aws_cognito_user_pool.main.id
+          value = local.cognito_user_pool_id
         },
         {
           name  = "COGNITO_CLIENT_ID"
-          value = aws_cognito_user_pool_client.main.id
+          value = local.cognito_client_id
         }
       ]
 
@@ -416,5 +385,72 @@ resource "aws_ecs_service" "service" {
   tags = {
     Project = local.project_name
     Service = each.key
+  }
+
+  # Ignore changes to desired_count as it's managed by auto-scaling
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+}
+
+# Auto-Scaling Targets (one per service)
+resource "aws_appautoscaling_target" "service" {
+  for_each = local.services
+
+  max_capacity       = var.max_capacity
+  min_capacity       = var.min_capacity
+  resource_id        = "service/${aws_ecs_cluster.microservices.name}/${aws_ecs_service.service[each.key].name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+
+  depends_on = [aws_ecs_service.service]
+}
+
+# Auto-Scaling Policies - Target Tracking on CPU (one per service)
+resource "aws_appautoscaling_policy" "service_cpu" {
+  for_each = local.services
+
+  name               = "${local.project_name}-${each.key}-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.service[each.key].resource_id
+  scalable_dimension = aws_appautoscaling_target.service[each.key].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.service[each.key].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+
+    target_value = var.target_cpu_utilization
+
+    # Scale-out cooldown: 45s (Fast Response)
+    scale_out_cooldown = var.scale_out_cooldown
+
+    # Scale-in cooldown: 180s (Slow Shrinkage)
+    # Verhältnis T_in/T_out = 180/45 = 4.0 (meets minimum requirement)
+    scale_in_cooldown = var.scale_in_cooldown
+  }
+}
+
+# Auto-Scaling Policy - Target Tracking on ALB Request Count (frontend-service only)
+# This enables proactive scaling based on incoming request rate before CPU becomes a bottleneck
+resource "aws_appautoscaling_policy" "frontend_requests" {
+  name               = "${local.project_name}-frontend-service-request-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.service["frontend-service"].resource_id
+  scalable_dimension = aws_appautoscaling_target.service["frontend-service"].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.service["frontend-service"].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = "${aws_lb.microservices.arn_suffix}/${aws_lb_target_group.frontend.arn_suffix}"
+    }
+
+    target_value = var.target_request_count
+
+    # Use same cooldown as CPU scaling for consistency
+    scale_out_cooldown = var.scale_out_cooldown
+    scale_in_cooldown  = var.scale_in_cooldown
   }
 }

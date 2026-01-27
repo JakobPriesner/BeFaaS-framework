@@ -61,12 +61,12 @@ output "cloudmap_service_arns" {
 
 output "cognito_user_pool_id" {
   description = "Cognito User Pool ID"
-  value       = aws_cognito_user_pool.main.id
+  value       = local.cognito_user_pool_id
 }
 
 output "cognito_client_id" {
   description = "Cognito User Pool Client ID"
-  value       = aws_cognito_user_pool_client.main.id
+  value       = local.cognito_client_id
 }
 
 output "alb_arn" {
