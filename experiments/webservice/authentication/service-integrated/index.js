@@ -59,6 +59,14 @@ async function verifyJWT(event, contextId) {
   } catch (err) {
     const duration = performance.now() - startTime;
     logAuthTiming(logContextId, duration, false);
+    const errorMsg = err.message || String(err);
+    // Throw timeout errors so they can be handled with 424 status
+    if (errorMsg.includes('time-out') || errorMsg.includes('timeout') || errorMsg.includes('ETIMEDOUT')) {
+      console.error('JWT verification timeout:', err);
+      const timeoutError = new Error('AUTH_TIMEOUT');
+      timeoutError.isAuthTimeout = true;
+      throw timeoutError;
+    }
     console.error('Error verifying JWT:', err);
     return false;
   }

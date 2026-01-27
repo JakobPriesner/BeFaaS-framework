@@ -3,6 +3,15 @@ const Router = require('@koa/router')
 const bodyParser = require('koa-bodyparser')
 const path = require('path')
 
+// Import monolith call provider
+const { registerHandlers, createCallContext, initDb, getDb } = require('./call')
+
+// Import metrics for HTTP request timing
+const { startHandlerTiming, logColdStartIfNeeded } = require('./shared/metrics')
+
+// Initialize database connection at startup
+initDb('redis')
+
 // Import all backend functions
 const addCartItem = require('./functions/addcartitem')
 const cartKvStorage = require('./functions/cartkvstorage')
@@ -26,6 +35,28 @@ const supportedCurrencies = require('./functions/supportedcurrencies')
 // Import frontend handlers
 const frontendHandlers = require('./functions/frontend/handlers')
 
+// Register all handlers with the call provider (enables direct in-process calls)
+registerHandlers({
+  addcartitem: addCartItem,
+  cartkvstorage: cartKvStorage,
+  checkout: checkout,
+  currency: currency,
+  email: email,
+  emptycart: emptyCart,
+  getads: getAds,
+  getcart: getCart,
+  getproduct: getProduct,
+  listproducts: listProducts,
+  listrecommendations: listRecommendations,
+  login: login,
+  payment: payment,
+  register: register,
+  searchproducts: searchProducts,
+  shipmentquote: shipmentQuote,
+  shiporder: shipOrder,
+  supportedcurrencies: supportedCurrencies
+})
+
 const app = new Koa()
 const router = new Router()
 
@@ -47,73 +78,50 @@ function ensureTemplatesInitialized () {
 }
 
 // Create context object with direct function calling for monolith
-// Functions expect ctx.call() directly (not ctx.lib.call())
+// Uses the shared call provider for all in-process calls
 // @param {Object} headers - Optional headers to propagate (e.g., { authorization: 'Bearer ...' })
 function createFunctionContext(headers = {}) {
-  const ctx = {}
-  ctx.call = async (functionName, event) => {
-    // Create a new context for the called function, propagating headers
-    const innerCtx = createFunctionContext(headers)
-
-    // Include headers in the event so verifyJWT can access them
-    const eventWithHeaders = headers.authorization
-      ? { ...event, headers: { authorization: headers.authorization } }
-      : event
-
-    switch (functionName) {
-      case 'addcartitem':
-        return await addCartItem(eventWithHeaders, innerCtx)
-      case 'cartkvstorage':
-        return await cartKvStorage(eventWithHeaders, innerCtx)
-      case 'checkout':
-        return await checkout(eventWithHeaders, innerCtx)
-      case 'currency':
-        return await currency(eventWithHeaders, innerCtx)
-      case 'email':
-        return await email(eventWithHeaders, innerCtx)
-      case 'emptycart':
-        return await emptyCart(eventWithHeaders, innerCtx)
-      case 'getads':
-        return await getAds(eventWithHeaders, innerCtx)
-      case 'getcart':
-        return await getCart(eventWithHeaders, innerCtx)
-      case 'getproduct':
-        return await getProduct(eventWithHeaders, innerCtx)
-      case 'listproducts':
-        return await listProducts(eventWithHeaders, innerCtx)
-      case 'listrecommendations':
-        return await listRecommendations(eventWithHeaders, innerCtx)
-      case 'payment':
-        return await payment(eventWithHeaders, innerCtx)
-      case 'searchproducts':
-        return await searchProducts(eventWithHeaders, innerCtx)
-      case 'shipmentquote':
-        return await shipmentQuote(eventWithHeaders, innerCtx)
-      case 'shiporder':
-        return await shipOrder(eventWithHeaders, innerCtx)
-      case 'supportedcurrencies':
-        return await supportedCurrencies(eventWithHeaders, innerCtx)
-      case 'login':
-        return await login(eventWithHeaders, innerCtx)
-      case 'register':
-        return await register(eventWithHeaders, innerCtx)
-      default:
-        throw new Error(`Function not found: ${functionName}`)
-    }
-  }
-  return ctx
+  return createCallContext(headers.authorization || null)
 }
 
-// Middleware to inject function context (for ctx.call())
+// Middleware to inject function context (for ctx.call(), ctx.db, etc.)
 app.use(async (ctx, next) => {
   // Extract Authorization header to propagate through call chain
   const authHeader = ctx.request.get('Authorization') || ctx.request.get('authorization')
   const headers = authHeader ? { authorization: authHeader } : {}
 
-  // Add call method directly to ctx for functions that expect ctx.call()
+  // Create function context with call, db, contextId, xPair
   const fnCtx = createFunctionContext(headers)
   ctx.call = fnCtx.call
+  ctx.db = fnCtx.db
+  ctx.contextId = fnCtx.contextId
+  ctx.xPair = fnCtx.xPair
   await next()
+})
+
+// Middleware for HTTP request timing (logs handler events for BEFAAS analysis)
+app.use(async (ctx, next) => {
+  // Skip health checks from timing
+  if (ctx.path === '/health') {
+    await next()
+    return
+  }
+
+  // Build route string for logging (method:path)
+  const route = `${ctx.method.toLowerCase()}:${ctx.path}`
+
+  // Start timing (also logs cold start if first request)
+  const endTiming = startHandlerTiming(ctx.contextId, ctx.xPair, route)
+
+  try {
+    await next()
+    // Log successful request with status code
+    endTiming(ctx.status)
+  } catch (error) {
+    // Log failed request with 500 status
+    endTiming(ctx.status || 500)
+    throw error
+  }
 })
 
 // Use body parser
@@ -136,6 +144,7 @@ function wrapFrontendHandler (handler) {
       params: koaCtx.params,
       cookies: koaCtx.cookies,
       response: koaCtx.response,
+      state: koaCtx.state, // Per-request state for session storage (prevents race conditions)
       get type() { return koaCtx.type },
       set type(v) { koaCtx.type = v },
       get body() { return koaCtx.body },

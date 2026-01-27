@@ -1,7 +1,11 @@
 const express = require('express')
 const cookieParser = require('cookie-parser')
 const path = require('path')
+const crypto = require('crypto')
 const { configureBeFaaSLib, callService } = require('./shared/libConfig')
+
+// Import metrics for HTTP request timing
+const { startHandlerTiming, logColdStartIfNeeded, createCallContext } = require('./shared/call')
 
 // Import API handler functions
 const login = require('./functions/login')
@@ -10,13 +14,91 @@ const register = require('./functions/register')
 // Import frontend HTML handlers
 const frontendHandlers = require('./functions/frontend/handlers')
 
+// Redis for 'none' auth mode (user validation without Cognito)
+let Redis
+try {
+  Redis = require('ioredis')
+} catch (e) {
+  // ioredis not available - 'none' auth mode won't work but service-integrated will
+  Redis = null
+}
+
 const app = express()
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 app.use(cookieParser())
 
+// Generate a random ID for tracing
+function generateRandomID() {
+  return crypto.randomBytes(8).toString('hex')
+}
+
+// HTTP request timing middleware (logs handler events for BEFAAS analysis)
+app.use((req, res, next) => {
+  // Skip health checks from timing
+  if (req.path === '/health') {
+    return next()
+  }
+
+  // Generate context IDs for tracing
+  const contextId = req.headers['x-context'] || generateRandomID()
+  const xPair = req.headers['x-pair'] || `${contextId}-${generateRandomID()}`
+
+  // Attach to request for use by handlers
+  req.contextId = contextId
+  req.xPair = xPair
+
+  // Build route string for logging (method:path)
+  const route = `${req.method.toLowerCase()}:${req.path}`
+
+  // Start timing (also logs cold start if first request)
+  const endTiming = startHandlerTiming(contextId, xPair, route)
+
+  // Hook into response finish to log timing
+  res.on('finish', () => {
+    endTiming(res.statusCode)
+  })
+
+  next()
+})
+
 // Configure microservices
 const { namespace } = configureBeFaaSLib()
+
+// Initialize Redis connection for 'none' auth mode user validation
+const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379'
+let redis = null
+
+function initRedis() {
+  if (!Redis) {
+    console.log('Redis client not available - skipping Redis initialization')
+    return
+  }
+  try {
+    redis = new Redis(redisUrl, {
+      retryDelayOnFailover: 100,
+      maxRetriesPerRequest: 3,
+      lazyConnect: true
+    })
+
+    redis.on('error', (err) => {
+      console.error('Redis connection error:', err.message)
+    })
+
+    redis.on('connect', () => {
+      console.log('Connected to Redis for user authentication')
+    })
+
+    // Connect asynchronously - don't block startup
+    redis.connect().catch(err => {
+      console.error('Failed to connect to Redis:', err.message)
+    })
+  } catch (err) {
+    console.error('Failed to initialize Redis:', err.message)
+  }
+}
+
+initRedis()
 
 // Initialize frontend templates
 let templatesInitialized = false
@@ -39,7 +121,15 @@ function ensureTemplatesInitialized() {
 // @param {Object} req - Express request object
 // @param {Object} res - Express response object
 // @param {string|null} authHeader - Optional Authorization header to propagate
-function createContext(req, res, authHeader = null) {
+// @param {Object} state - Optional state object for per-request storage
+function createContext(req, res, authHeader = null, state = {}) {
+  // Get tracing context from request (set by timing middleware)
+  const contextId = req.contextId || generateRandomID()
+  const xPair = req.xPair || `${contextId}-${generateRandomID()}`
+
+  // Create instrumented call context for RPC tracking
+  const callCtx = createCallContext(authHeader, contextId, xPair)
+
   return {
     call: async (functionName, event) => {
       // Include auth header in event for verifyJWT
@@ -49,15 +139,40 @@ function createContext(req, res, authHeader = null) {
 
       // Route internal frontend-service calls in-process
       if (functionName === 'login') {
-        return await login(eventWithHeaders, createContext(req, res, authHeader))
+        return await login(eventWithHeaders, createContext(req, res, authHeader, state))
       }
       if (functionName === 'register') {
-        return await register(eventWithHeaders, createContext(req, res, authHeader))
+        return await register(eventWithHeaders, createContext(req, res, authHeader, state))
       }
-      // External service calls go through HTTP
-      return await callService(functionName, event, authHeader)
+      // External service calls go through HTTP with instrumented RPC tracking
+      return await callCtx.call(functionName, event)
     },
-    request: { body: req.body },
+    // Redis db access for 'none' auth mode (user validation without Cognito)
+    db: {
+      get: async (key) => {
+        if (!redis) return null
+        try {
+          const value = await redis.get(key)
+          return value ? JSON.parse(value) : null
+        } catch (err) {
+          console.error('Redis get error:', err.message)
+          return null
+        }
+      },
+      set: async (key, value) => {
+        if (!redis) return
+        try {
+          if (value === null) {
+            await redis.del(key)
+          } else {
+            await redis.set(key, JSON.stringify(value))
+          }
+        } catch (err) {
+          console.error('Redis set error:', err.message)
+        }
+      }
+    },
+    request: { body: req.body, headers: req.headers },
     params: req.params,
     cookies: {
       get: (name) => req.cookies[name],
@@ -72,6 +187,7 @@ function createContext(req, res, authHeader = null) {
         }
       }
     },
+    state, // Per-request state for session storage (prevents race conditions)
     get type() { return res.get('Content-Type') },
     set type(v) { res.type(v) },
     get body() { return res._body },

@@ -1,8 +1,14 @@
 const lib = require('@befaas/lib')
 const { CognitoIdentityProviderClient, SignUpCommand, AdminConfirmSignUpCommand } = require('@aws-sdk/client-cognito-identity-provider')
+const { NodeHttpHandler } = require('@smithy/node-http-handler')
 
 const cognitoClient = new CognitoIdentityProviderClient({
-  region: process.env.AWS_REGION || 'us-east-1'
+  region: process.env.AWS_REGION || 'us-east-1',
+  requestHandler: new NodeHttpHandler({
+    maxSockets: 200,
+    connectionTimeout: 10000,
+    socketTimeout: 10000
+  })
 })
 
 const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID
