@@ -3,7 +3,7 @@
 /**
  * Pre-register users in Redis for auth modes that use Redis for user storage.
  *
- * Uses precomputed bcrypt hashes from users.csv for fast registration.
+ * Uses precomputed argon2id hashes from users.csv for fast registration.
  * Falls back to runtime hashing if passwordHash column is missing.
  *
  * Supports:
@@ -11,10 +11,11 @@
  * - 'service-integrated-manual' auth mode: stores bcrypt hashed passwords
  *
  * Usage:
- *   node scripts/preregister-redis.js --auth <none|service-integrated-manual>
+ *   node scripts/preregister-redis.js --auth <none|service-integrated-manual> [--algorithm <alg>]
  *
  * Options:
  *   --auth, -a        Auth mode (none, service-integrated-manual) [required]
+ *   --algorithm       Algorithm variant: bcrypt-hs256 or argon2id-eddsa (default: argon2id-eddsa)
  *   --limit, -l       Limit number of users to register (default: all)
  *   --help, -h        Show help
  *
@@ -23,14 +24,12 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync, spawn } = require('child_process');
+const { execSync } = require('child_process');
 const net = require('net');
 
 const projectRoot = path.join(__dirname, '..');
 const usersFile = path.join(projectRoot, 'artillery', 'users.csv');
 
-// bcrypt constants
-const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS, 10) || 10;
 const BATCH_SIZE = 1000; // Larger batch size since no hashing needed with precomputed hashes
 
 /**
@@ -38,13 +37,16 @@ const BATCH_SIZE = 1000; // Larger batch size since no hashing needed with preco
  */
 function parseArgs() {
   const args = process.argv.slice(2);
-  const config = { auth: null, limit: null };
+  const config = { auth: null, limit: null, algorithm: 'argon2id-eddsa' };
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '--auth':
       case '-a':
         config.auth = args[++i];
+        break;
+      case '--algorithm':
+        config.algorithm = args[++i];
         break;
       case '--limit':
       case '-l':
@@ -68,21 +70,29 @@ function parseArgs() {
     process.exit(1);
   }
 
+  const validAlgorithms = ['argon2id-eddsa', 'bcrypt-hs256'];
+  if (!validAlgorithms.includes(config.algorithm)) {
+    console.error(`Error: Invalid algorithm '${config.algorithm}'. Must be one of: ${validAlgorithms.join(', ')}`);
+    process.exit(1);
+  }
+
   return config;
 }
 
 function printUsage() {
   console.log(`
-Usage: node scripts/preregister-redis.js --auth <mode>
+Usage: node scripts/preregister-redis.js --auth <mode> [--algorithm <alg>]
 
 Options:
   --auth, -a        Auth mode (none, service-integrated-manual) [required]
+  --algorithm       Algorithm variant: bcrypt-hs256 or argon2id-eddsa (default: argon2id-eddsa)
   --limit, -l       Limit number of users to register (default: all)
   --help, -h        Show help
 
 Examples:
   node scripts/preregister-redis.js --auth none
   node scripts/preregister-redis.js --auth service-integrated-manual
+  node scripts/preregister-redis.js --auth service-integrated-manual --algorithm bcrypt-hs256
   node scripts/preregister-redis.js --auth none --limit 100
 `);
 }
@@ -164,49 +174,37 @@ function parseUsersCSV(limit = null) {
 }
 
 /**
- * Batch hash passwords in parallel using worker processes (fallback only)
+ * Batch hash passwords at runtime (fallback only)
  */
-async function hashPasswordsBatch(passwords, rounds) {
-  const escapedPasswords = passwords.map(p => p.replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
-  const bcryptScript = `
+async function hashPasswordsBatch(passwords, algorithm) {
+  const crypto = require('crypto');
+  const hashes = [];
+
+  if (algorithm === 'bcrypt-hs256') {
     const bcrypt = require('bcryptjs');
-    const passwords = ${JSON.stringify(escapedPasswords)};
-    const rounds = ${rounds};
-
-    async function hashAll() {
-      const results = [];
-      for (const pwd of passwords) {
-        const hash = await bcrypt.hash(pwd, rounds);
-        results.push(hash);
-      }
-      console.log(JSON.stringify(results));
+    for (const password of passwords) {
+      const hash = await bcrypt.hash(password, 10);
+      hashes.push(hash);
     }
-    hashAll().catch(e => { console.error(e); process.exit(1); });
-  `;
+  } else {
+    const { argon2id } = require('hash-wasm');
+    for (const password of passwords) {
+      const salt = new Uint8Array(16);
+      crypto.randomFillSync(salt);
+      const hash = await argon2id({
+        password,
+        salt,
+        parallelism: 1,
+        iterations: 3,
+        memorySize: 65536,
+        hashLength: 32,
+        outputType: 'encoded'
+      });
+      hashes.push(hash);
+    }
+  }
 
-  return new Promise((resolve, reject) => {
-    const child = spawn('node', ['-e', bcryptScript], {
-      cwd: projectRoot,
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', data => stdout += data);
-    child.stderr.on('data', data => stderr += data);
-
-    child.on('close', code => {
-      if (code !== 0) {
-        reject(new Error(`bcrypt process failed: ${stderr}`));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout.trim()));
-      } catch (e) {
-        reject(new Error(`Failed to parse bcrypt output: ${stdout}`));
-      }
-    });
-  });
+  return hashes;
 }
 
 /**
@@ -374,7 +372,7 @@ class RedisClient {
 /**
  * Prepare user data for a batch of users
  */
-async function prepareBatch(users, authMode, hasPrecomputedHashes) {
+async function prepareBatch(users, authMode, hasPrecomputedHashes, algorithm) {
   const createdAt = new Date().toISOString();
 
   if (authMode === 'none') {
@@ -396,9 +394,9 @@ async function prepareBatch(users, authMode, hasPrecomputedHashes) {
     }
 
     // Fallback: compute hashes at runtime (slow)
-    console.log('  Warning: Computing hashes at runtime (CSV lacks passwordHash column)');
+    console.log(`  Warning: Computing hashes at runtime (CSV lacks passwordHash column, using ${algorithm || 'argon2id-eddsa'})`);
     const passwords = users.map(u => u.password);
-    const hashes = await hashPasswordsBatch(passwords, BCRYPT_ROUNDS);
+    const hashes = await hashPasswordsBatch(passwords, algorithm);
 
     return users.map((user, i) => ({
       key: `user:${user.userName}`,
@@ -423,6 +421,9 @@ async function main() {
   console.log('  Pre-registering Users in Redis');
   console.log('='.repeat(60));
   console.log(`\nAuth mode: ${config.auth}`);
+  if (config.auth === 'service-integrated-manual') {
+    console.log(`Algorithm: ${config.algorithm}`);
+  }
   console.log(`Batch size: ${BATCH_SIZE}`);
 
   // Parse users
@@ -463,7 +464,7 @@ async function main() {
     const batch = users.slice(start, end);
 
     try {
-      const keyValuePairs = await prepareBatch(batch, config.auth, hasPrecomputedHashes);
+      const keyValuePairs = await prepareBatch(batch, config.auth, hasPrecomputedHashes, config.algorithm);
       const results = await redis.mset(keyValuePairs);
 
       for (const result of results) {

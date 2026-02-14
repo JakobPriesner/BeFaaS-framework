@@ -15,6 +15,8 @@
     "aws-jwt-verify": "^4.0.1",
     "bcryptjs": "^2.4.3",
     "card-validator": "^8.1.1",
+    "hash-wasm": "^4.11.0",
+    "jose": "^5.2.0",
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^3.1.0",
     "koa": "^2.14.2",

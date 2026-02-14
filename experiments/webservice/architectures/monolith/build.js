@@ -1,28 +1,9 @@
 const fs = require('fs');
 const path = require('path');
+const { copyDirectoryRecursive } = require('../shared/buildUtils');
 
-// Helper function to recursively copy a directory
-function copyDirRecursive(src, dest) {
-  if (!fs.existsSync(dest)) {
-    fs.mkdirSync(dest, { recursive: true });
-  }
-
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-
-    if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
-}
-
-async function build(tmpDir, authStrategy) {
-  console.log(`Building Monolith architecture with auth strategy: ${authStrategy}`);
+async function build(tmpDir, authStrategy, bundleMode = 'minimal', algorithm = null) {
+  console.log(`Building Monolith architecture with auth strategy: ${authStrategy}${algorithm ? `, algorithm: ${algorithm}` : ''}`);
 
   // Create the temporary directory, if not exists
   if (!fs.existsSync(tmpDir)) {
@@ -33,6 +14,11 @@ async function build(tmpDir, authStrategy) {
   const indexPath = path.join(__dirname, 'index.js');
   const destIndexPath = path.join(tmpDir, 'index.js');
   fs.copyFileSync(indexPath, destIndexPath);
+
+  // 1b. Copy the monolith call.js (call provider)
+  const callPath = path.join(__dirname, 'call.js');
+  const destCallPath = path.join(tmpDir, 'call.js');
+  fs.copyFileSync(callPath, destCallPath);
 
   // 2. Copy the package.json
   const packagePath = path.join(__dirname, 'package.json');
@@ -59,7 +45,10 @@ async function build(tmpDir, authStrategy) {
   });
 
   // Get auth strategy files
-  const authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+  let authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+  if (algorithm) {
+    authStrategyDir = path.join(authStrategyDir, 'algorithms', algorithm);
+  }
   const authFiles = fs.readdirSync(authStrategyDir).filter(file => {
     return fs.statSync(path.join(authStrategyDir, file)).isFile();
   });
@@ -73,15 +62,15 @@ async function build(tmpDir, authStrategy) {
     const destFunctionDir = path.join(functionsDir, functionName);
 
     // Recursively copy the entire function directory (includes html_templates, etc.)
-    copyDirRecursive(srcFunctionDir, destFunctionDir);
+    copyDirectoryRecursive(srcFunctionDir, destFunctionDir);
 
-    // For 'none' auth strategy, use mock handlers for login and register to skip Cognito calls
-    if (authStrategy === 'none' && authMockFunctions.includes(functionName)) {
-      const mockHandlerPath = path.join(authStrategyDir, `${functionName}.js`);
-      if (fs.existsSync(mockHandlerPath)) {
+    // For auth strategies with custom login/register handlers, use those instead of default Cognito handlers
+    if (authMockFunctions.includes(functionName)) {
+      const customHandlerPath = path.join(authStrategyDir, `${functionName}.js`);
+      if (fs.existsSync(customHandlerPath)) {
         const destIndexPath = path.join(destFunctionDir, 'index.js');
-        fs.copyFileSync(mockHandlerPath, destIndexPath);
-        console.log(`    Using mock ${functionName} handler for 'none' auth strategy`);
+        fs.copyFileSync(customHandlerPath, destIndexPath);
+        console.log(`    Using custom ${functionName} handler from '${authStrategy}' auth strategy`);
       }
     }
 
@@ -114,7 +103,7 @@ async function build(tmpDir, authStrategy) {
   const productcatalogDest = path.join(tmpDir, 'productcatalog');
   if (fs.existsSync(productcatalogSrc)) {
     console.log('  Copying productcatalog...');
-    copyDirRecursive(productcatalogSrc, productcatalogDest);
+    copyDirectoryRecursive(productcatalogSrc, productcatalogDest);
   }
 
   // 7. Copy currency data (used by currency functions)
@@ -122,7 +111,15 @@ async function build(tmpDir, authStrategy) {
   const currencyDest = path.join(tmpDir, 'currency');
   if (fs.existsSync(currencySrc)) {
     console.log('  Copying currency data...');
-    copyDirRecursive(currencySrc, currencyDest);
+    copyDirectoryRecursive(currencySrc, currencyDest);
+  }
+
+  // 8. Copy shared utilities (call.js requires ../shared/call)
+  const sharedSrc = path.join(__dirname, '..', 'shared');
+  const sharedDest = path.join(tmpDir, 'shared');
+  if (fs.existsSync(sharedSrc)) {
+    console.log('  Copying shared utilities...');
+    copyDirectoryRecursive(sharedSrc, sharedDest);
   }
 
   console.log(`Build complete for Monolith in ${tmpDir}`);
@@ -132,11 +129,12 @@ module.exports = build;
 
 // Allow running as a standalone script
 if (require.main === module) {
-  const authStrategy = process.argv[2] || 'none';
-  const outputDir = process.argv[3] || path.join(__dirname, '_build');
+  const outputDir = process.argv[2] || path.join(__dirname, '_build');
+  const authStrategy = process.argv[3] || 'none';
+  const algorithm = process.argv[4] || null;
 
-  console.log(`Running build with auth: ${authStrategy}, output: ${outputDir}`);
-  build(outputDir, authStrategy)
+  console.log(`Running build with auth: ${authStrategy}, output: ${outputDir}${algorithm ? `, algorithm: ${algorithm}` : ''}`);
+  build(outputDir, authStrategy, 'minimal', algorithm)
     .then(() => process.exit(0))
     .catch(error => {
       console.error('Build failed:', error);

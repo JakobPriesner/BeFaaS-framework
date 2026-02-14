@@ -13,7 +13,6 @@ Options:
     --pricing       Generate pricing analysis plots
     --callgraph     Generate function call graph plots
     --stress-ramp   Generate stress test ramp/scaling plots
-    --stress-auth   Generate stress test auth-specific plots
     --hardware      Generate hardware utilization plots (CPU, Memory)
     --all           Generate all plots (default)
     --exclude-warmup    Exclude warmup period from pure performance plots (default)
@@ -38,7 +37,6 @@ from .generate_auth_plots import generate_auth_plots
 from .generate_pricing_plots import generate_pricing_plots
 from .generate_callgraph_plots import generate_callgraph_plots
 from .generate_stress_ramp_plot import generate_stress_ramp_plots
-from .generate_stress_auth_plot import generate_stress_auth_plots
 from .generate_hardware_plots import generate_hardware_plots
 
 
@@ -62,7 +60,6 @@ def generate_all_plots(data_path, output_dir, options=None):
             'pricing': True,
             'callgraph': True,
             'stress_ramp': True,
-            'stress_auth': True,
             'hardware': True,
             'exclude_warmup': True,
         }
@@ -101,9 +98,6 @@ def generate_all_plots(data_path, output_dir, options=None):
     if options.get('stress_ramp', True):
         generate_stress_ramp_plots(data, output_dir)
 
-    if options.get('stress_auth', True):
-        generate_stress_auth_plots(data, output_dir)
-
     if options.get('hardware', True):
         # Hardware plots look for cloudwatch directory in the output directory
         cloudwatch_dir = os.path.join(output_dir, 'cloudwatch')
@@ -124,7 +118,6 @@ def main():
     parser.add_argument('--pricing', action='store_true', help='Generate pricing plots')
     parser.add_argument('--callgraph', action='store_true', help='Generate call graph plots')
     parser.add_argument('--stress-ramp', action='store_true', help='Generate stress ramp plots')
-    parser.add_argument('--stress-auth', action='store_true', help='Generate stress auth plots')
     parser.add_argument('--hardware', action='store_true', help='Generate hardware utilization plots')
     parser.add_argument('--all', action='store_true', help='Generate all plots (default)')
     parser.add_argument('--exclude-warmup', action='store_true', default=True, help='Exclude warmup period (default)')
@@ -134,7 +127,7 @@ def main():
 
     specific_selected = any([
         args.baseline, args.endpoint, args.category, args.auth,
-        args.pricing, args.callgraph, args.stress_ramp, args.stress_auth, args.hardware
+        args.pricing, args.callgraph, args.stress_ramp, args.hardware
     ])
 
     if args.all or not specific_selected:
@@ -146,7 +139,6 @@ def main():
             'pricing': True,
             'callgraph': True,
             'stress_ramp': True,
-            'stress_auth': True,
             'hardware': True,
             'exclude_warmup': not args.include_warmup,
         }
@@ -159,7 +151,6 @@ def main():
             'pricing': args.pricing,
             'callgraph': args.callgraph,
             'stress_ramp': args.stress_ramp,
-            'stress_auth': args.stress_auth,
             'hardware': args.hardware,
             'exclude_warmup': not args.include_warmup,
         }

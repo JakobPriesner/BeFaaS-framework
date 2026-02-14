@@ -3,6 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const readline = require('readline');
+const yaml = require('js-yaml');
 
 // Import modules
 const { parseArgs, validateConfig } = require('./experiment/config');
@@ -12,7 +14,7 @@ const { runDeploy, runDestroy, resetCognitoUserPool, forceDestroyRedis } = requi
 const { runBenchmark } = require('./experiment/benchmark');
 const { collectMetrics } = require('./experiment/metrics');
 const { collectCloudWatchMetrics } = require('./experiment/cloudwatch-metrics');
-const { collectAndCleanupLambdaLogs, cleanupOldLogGroupsForRun } = require('./experiment/lambda-logs');
+const { collectAndCleanupLambdaLogs, cleanupOldLogGroupsForRun, cleanupAllOrphanedLogGroups, cleanupAllEdgeLambdaLogs } = require('./experiment/lambda-logs');
 const { collectPricingMetrics } = require('./experiment/pricing');
 const { analyzeResults } = require('./experiment/analysis');
 const {
@@ -22,13 +24,15 @@ const {
   cleanupBuildArtifacts,
   uploadResultsToS3,
   deleteLocalResults,
-  setupLogging
+  setupLogging,
+  parseCpuInfoFromLogs
 } = require('./experiment/utils');
+const { getTerraformOutputJson } = require('./deploy-shared');
 
 /**
  * Run a single benchmark phase including benchmark execution, metrics collection, and analysis
  * @param {Object} config - Experiment configuration
- * @param {string} phaseName - Name of the benchmark phase (e.g., 'baseline', 'stress-auth')
+ * @param {string} phaseName - Name of the benchmark phase (e.g., 'baseline', 'scaling')
  * @param {string} workload - Workload file to use
  * @param {string} phaseOutputDir - Output directory for this phase
  * @returns {number} - Start timestamp for this phase
@@ -53,19 +57,17 @@ async function runBenchmarkPhase(config, phaseName, workload, phaseOutputDir) {
   await resetCognitoUserPool();
 
   // Run benchmark
-  await runBenchmark(config.experiment, workload, phaseOutputDir, config.auth);
+  await runBenchmark(config.experiment, workload, phaseOutputDir, config.auth, config.architecture);
 
   // Record phase end time (add 1 minute buffer to capture trailing metrics)
   const phaseEndTime = Date.now() + 60000;
 
   // Collect metrics
   if (!config.skipMetrics) {
-    await collectMetrics(config.experiment, phaseOutputDir, phaseStartTime, config.architecture);
+    await collectMetrics(config.experiment, phaseOutputDir, phaseStartTime, config.architecture, config.auth);
 
-    // Collect Lambda logs for FaaS architecture and cleanup log groups after collection
-    if (config.architecture === 'faas') {
-      await collectAndCleanupLambdaLogs(config, phaseOutputDir, phaseStartTime, phaseEndTime);
-    }
+    // Note: Lambda log collection for FaaS is already handled by collectMetrics()
+    // Do NOT call collectAndCleanupLambdaLogs() again here - it would overwrite the logs!
 
     // Collect CloudWatch metrics for all architectures
     await collectCloudWatchMetrics(config, phaseOutputDir, phaseStartTime, phaseEndTime);
@@ -267,10 +269,113 @@ function combinePhaseInsights(outputDir, phases, config) {
   return combinedInsights;
 }
 
+/**
+ * Prompt user for confirmation before continuing
+ * @param {string} message - Message to display to user
+ * @returns {Promise<boolean>} - True if user confirms, false otherwise
+ */
+async function waitForUserConfirmation(message) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  return new Promise((resolve) => {
+    rl.question(`\n${message}\nPress Enter to continue or Ctrl+C to abort... `, () => {
+      rl.close();
+      resolve(true);
+    });
+  });
+}
+
+/**
+ * Read per-service scaling config from Terraform outputs and write to hardware_config.json.
+ * Called after terraform deploy so we capture actual values (defaults or overrides).
+ * @param {Object} config - Experiment configuration
+ * @param {string} hardwareConfigDir - Path to the directory containing hardware_config.json
+ */
+function updateHardwareConfigWithScalingRules(config, hardwareConfigDir) {
+  const hardwareConfigFile = path.join(hardwareConfigDir, 'hardware_config.json');
+  if (!fs.existsSync(hardwareConfigFile)) {
+    console.log('hardware_config.json not found, skipping scaling rules update');
+    return;
+  }
+
+  const projectRoot = path.join(__dirname, '..');
+  let terraformDir;
+
+  if (config.architecture === 'monolith') {
+    terraformDir = path.join(projectRoot, 'infrastructure', 'monolith', 'aws');
+  } else if (config.architecture === 'microservices') {
+    terraformDir = path.join(projectRoot, 'infrastructure', 'microservices', 'aws');
+  } else {
+    // FaaS has no ECS scaling rules
+    return;
+  }
+
+  try {
+    const output = getTerraformOutputJson(terraformDir);
+    const scalingConfig = output.scaling_config?.value;
+
+    if (!scalingConfig) {
+      console.log('No scaling_config output from Terraform, skipping');
+      return;
+    }
+
+    const hardwareConfig = JSON.parse(fs.readFileSync(hardwareConfigFile, 'utf8'));
+    hardwareConfig.services = scalingConfig;
+    fs.writeFileSync(hardwareConfigFile, JSON.stringify(hardwareConfig, null, 2));
+
+    const serviceCount = Object.keys(scalingConfig).length;
+    const ruleCount = Object.values(scalingConfig).reduce(
+      (sum, svc) => sum + Object.keys(svc.scaling_rules || {}).length, 0
+    );
+    console.log(`✓ Updated hardware_config.json with scaling rules (${serviceCount} services, ${ruleCount} rules)`);
+  } catch (error) {
+    console.warn('Warning: Could not read scaling config from Terraform:', error.message);
+  }
+}
+
+/**
+ * Update hardware_config.json with CPU info parsed from collected logs
+ * @param {string} logsDir - Path to the logs directory (containing aws.log)
+ * @param {string} hardwareConfigDir - Path to the directory containing hardware_config.json
+ */
+async function updateHardwareConfigWithCpuInfo(logsDir, hardwareConfigDir) {
+  const cpuInfo = await parseCpuInfoFromLogs(logsDir);
+  if (!cpuInfo) {
+    console.log('No CPU info found in logs');
+    return;
+  }
+
+  const hardwareConfigFile = path.join(hardwareConfigDir, 'hardware_config.json');
+  if (!fs.existsSync(hardwareConfigFile)) {
+    console.log('hardware_config.json not found, skipping CPU info update');
+    return;
+  }
+
+  try {
+    const hardwareConfig = JSON.parse(fs.readFileSync(hardwareConfigFile, 'utf8'));
+    hardwareConfig.service_cpu_info = cpuInfo;
+    fs.writeFileSync(hardwareConfigFile, JSON.stringify(hardwareConfig, null, 2));
+    console.log(`✓ Updated hardware_config.json with service CPU info: ${cpuInfo.model_name || 'unknown'}`);
+  } catch (error) {
+    console.warn('Warning: Could not update hardware_config.json with CPU info:', error.message);
+  }
+}
+
 async function main() {
   // Parse and validate configuration
   const args = process.argv.slice(2);
   const config = validateConfig(parseArgs(args));
+
+  // Handle --cleanup-logs mode (cleanup orphaned log groups and exit)
+  if (config.cleanupLogs) {
+    logSection('Cleaning Up ALL Orphaned CloudWatch Log Groups');
+    await cleanupAllOrphanedLogGroups();
+    console.log('\n✓ Cleanup complete. Exiting.');
+    process.exit(0);
+  }
 
   // Create output directory early
   if (!fs.existsSync(config.outputDir)) {
@@ -284,12 +389,22 @@ async function main() {
   console.log(`  Experiment: ${config.experiment}`);
   console.log(`  Architecture: ${config.architecture}`);
   console.log(`  Auth Strategy: ${config.auth}`);
-  console.log(`  Lambda Memory: ${config.memory} MB`);
+  if (config.algorithm) {
+    console.log(`  Algorithm: ${config.algorithm}`);
+  }
+
+  // Hardware configuration
+  if (config.architecture === 'faas') {
+    console.log(`  Lambda Memory: ${config.memory} MB`);
+  } else {
+    console.log(`  Fargate CPU: ${config.cpu} units (${config.cpu / 1024} vCPU)`);
+    console.log(`  Fargate Memory: ${config.memoryFargate} MB`);
+  }
+
   console.log(`  Workload: ${config.workload}`);
   console.log(`  Run ID: ${config.runId}`);
   console.log(`  Scaling Test: ${config.scaling ? 'enabled' : 'disabled'}`);
-  console.log(`  Stress Auth Test: ${config.stressAuth ? 'enabled' : 'disabled'}`);
-  if (config.scaling || config.stressAuth) {
+  if (config.scaling) {
     console.log(`  Scale Down Wait: ${config.scaleDownWait}s`);
   }
   console.log(`  Output Directory: ${config.outputDir}`);
@@ -304,77 +419,122 @@ async function main() {
     setHardwareConfig(config);
     installTerraformProviders();
 
-    // Step 1: Cleanup and destroy existing infrastructure
-    cleanupBuildArtifacts(config.experiment, config.architecture);
+    // Skip all pre-benchmark steps if --skip-benchmark is set
+    if (!config.skipBenchmark) {
+      // Step 1: Cleanup and destroy existing infrastructure
+      cleanupBuildArtifacts(config.experiment, config.architecture);
 
-    try {
-      // Force destroy Redis containers first to prevent hanging
       try {
-        await forceDestroyRedis(config.experiment);
-      } catch (redisError) {
-        console.warn('Warning: Could not force destroy Redis:', redisError.message);
+        // Force destroy Redis containers first to prevent hanging
+        try {
+          await forceDestroyRedis(config.experiment);
+        } catch (redisError) {
+          console.warn('Warning: Could not force destroy Redis:', redisError.message);
+        }
+
+        await runDestroy(config.experiment, config.architecture, config.auth);
+      } catch (error) {
+        console.log('No existing infrastructure to destroy or destroy failed:', error.message);
       }
 
-      await runDestroy(config.experiment, config.architecture);
-    } catch (error) {
-      console.log('No existing infrastructure to destroy or destroy failed:', error.message);
-    }
+      // Clean up old CloudWatch log groups for this run_id (FaaS only)
+      // This ensures we start with clean logs even if a previous run failed
+      if (config.architecture === 'faas') {
+        logSection('Cleaning Up Old CloudWatch Logs');
+        await cleanupOldLogGroupsForRun(config.runId);
+      }
 
-    // Clean up old CloudWatch log groups for this run_id (FaaS only)
-    // This ensures we start with clean logs even if a previous run failed
-    if (config.architecture === 'faas') {
-      logSection('Cleaning Up Old CloudWatch Logs');
-      await cleanupOldLogGroupsForRun(config.runId);
-    }
+      // Step 2: Build
+      buildDir = await runBuild(config.experiment, config.architecture, config.auth, config.bundleMode, config.algorithm);
 
-    // Step 2: Build
-    buildDir = await runBuild(config.experiment, config.architecture, config.auth, config.bundleMode);
+      // Step 3: Deploy
+      // Record experiment start time (in milliseconds for AWS CloudWatch)
+      // Subtract 1 minute buffer to ensure we capture initialization logs
+      experimentStartTime = Date.now() - 60000;
 
-    // Step 3: Deploy
-    // Record experiment start time (in milliseconds for AWS CloudWatch)
-    // Subtract 1 minute buffer to ensure we capture initialization logs
-    experimentStartTime = Date.now() - 60000;
+      // Write timestamp to file for reference
+      const timestampFile = path.join(config.outputDir, 'experiment_start_time.txt');
+      fs.writeFileSync(timestampFile, `${experimentStartTime}\n${new Date(experimentStartTime).toISOString()}`);
+      console.log(`Experiment start time recorded: ${new Date(experimentStartTime).toISOString()}`);
 
-    // Write timestamp to file for reference
-    const timestampFile = path.join(config.outputDir, 'experiment_start_time.txt');
-    fs.writeFileSync(timestampFile, `${experimentStartTime}\n${new Date(experimentStartTime).toISOString()}`);
-    console.log(`Experiment start time recorded: ${new Date(experimentStartTime).toISOString()}`);
+      // Write hardware configuration
+      const hardwareConfig = {
+        architecture: config.architecture,
+        auth_strategy: config.auth,
+        aws_service: config.architecture === 'faas' ? 'lambda' : 'ecs fargate',
+        ram_in_mb: config.architecture === 'faas' ? config.memory : config.memoryFargate,
+        datetime: config.runId.split('_').pop() // Extract timestamp from runId
+      };
+      if (config.architecture !== 'faas') {
+        hardwareConfig.cpu_in_vcpu = config.cpu / 1024;
+      }
+      if (config.algorithm) {
+        const algorithmMap = {
+          'bcrypt-hs256': { password_hash_algorithm: 'bcrypt', jwt_sign_algorithm: 'HS256' },
+          'argon2id-eddsa': { password_hash_algorithm: 'argon2id', jwt_sign_algorithm: 'EdDSA' }
+        };
+        const algConfig = algorithmMap[config.algorithm];
+        if (algConfig) {
+          hardwareConfig.password_hash_algorithm = algConfig.password_hash_algorithm;
+          hardwareConfig.jwt_sign_algorithm = algConfig.jwt_sign_algorithm;
+        }
+      }
+      const hardwareConfigFile = path.join(config.outputDir, 'hardware_config.json');
+      fs.writeFileSync(hardwareConfigFile, JSON.stringify(hardwareConfig, null, 2));
+      console.log(`Hardware config written: ${hardwareConfigFile}`);
 
-    // Set run_id for Terraform (used for CloudWatch log group naming)
-    process.env.TF_VAR_run_id = config.runId;
-    console.log(`Run ID: ${config.runId}`);
+      // Write benchmark configuration - read timeout from workload YAML
+      const workloadFile = path.join(__dirname, '..', 'experiments', config.experiment, config.workload);
+      const workloadYaml = yaml.load(fs.readFileSync(workloadFile, 'utf8'));
+      const benchmarkConfig = {
+        http_timeout_in_seconds: workloadYaml.config && workloadYaml.config.http && workloadYaml.config.http.timeout || 10
+      };
+      const benchmarkConfigFile = path.join(config.outputDir, 'benchmark_configuration.json');
+      fs.writeFileSync(benchmarkConfigFile, JSON.stringify(benchmarkConfig, null, 2));
+      console.log(`Benchmark config written: ${benchmarkConfigFile}`);
 
-    const endpoints = await runDeploy(config.experiment, config.architecture, buildDir);
+      // Create empty error description file (will be populated if error occurs)
+      const errorDescFile = path.join(config.outputDir, 'error_description.md');
+      fs.writeFileSync(errorDescFile, '');
+      console.log(`Error description file created: ${errorDescFile}`);
 
-    // Wait for deployment to stabilize
-    const isEcsBased = config.architecture === 'monolith' || config.architecture === 'microservices';
-    const stabilizationDelay = isEcsBased ? 180000 : 5000; // 3 min for ecs, 5s for Lambda
-    const healthCheckRetries = 120;
-    const healthCheckDelay = isEcsBased ? 30000 : 3000; // 30s for ecs, 3s for Lambda
+      // Set run_id for Terraform (used for CloudWatch log group naming)
+      process.env.TF_VAR_run_id = config.runId;
+      console.log(`Run ID: ${config.runId}`);
 
-    console.log(`\nWaiting for deployment to stabilize (${stabilizationDelay / 1000}s)...`);
-    await new Promise(resolve => setTimeout(resolve, stabilizationDelay));
+      const endpoints = await runDeploy(config.experiment, config.architecture, buildDir, config.auth, config.algorithm);
 
-    // Health check
-    const isHealthy = await checkHealth(endpoints, healthCheckRetries, healthCheckDelay);
-    if (!isHealthy) {
-      throw new Error('Deployment failed health check');
-    }
+      // Capture per-service scaling rules from Terraform state into hardware_config.json
+      updateHardwareConfigWithScalingRules(config, config.outputDir);
 
-    // Note: Redis user preregistration now runs on the workload EC2 instance
-    // inside the Docker container (see artillery/preregister-redis.js)
-    // The AUTH_MODE env var is passed via workload.sh -> terraform
+      // Wait for deployment to stabilize
+      const isEcsBased = config.architecture === 'monolith' || config.architecture === 'microservices';
+      const isEdgeAuth = config.auth === 'edge';
+      // CloudFront takes longer to propagate (3-5 min creation + propagation time)
+      const stabilizationDelay = isEcsBased ? 180000 : (isEdgeAuth ? 60000 : 5000); // 3 min for ecs, 1 min for edge, 5s for Lambda
+      const healthCheckRetries = 120;
+      const healthCheckDelay = isEcsBased ? 30000 : 3000; // 30s for ecs, 3s for Lambda
 
-    // Step 4-7: Run Benchmark Phases
-    if (!config.skipBenchmark) {
-      const isMultiPhase = config.scaling || config.stressAuth;
+      console.log(`\nWaiting for deployment to stabilize (${stabilizationDelay / 1000}s)...`);
+      await new Promise(resolve => setTimeout(resolve, stabilizationDelay));
+
+      // Health check
+      const isHealthy = await checkHealth(endpoints, healthCheckRetries, healthCheckDelay);
+      if (!isHealthy) {
+        throw new Error('Deployment failed health check');
+      }
+
+      // Note: Redis user preregistration now runs on the workload EC2 instance
+      // inside the Docker container (see artillery/preregister-redis.js)
+      // The AUTH_MODE env var is passed via workload.sh -> terraform
+
+      // Step 4-7: Run Benchmark Phases
+      const isMultiPhase = config.scaling;
 
       if (isMultiPhase) {
         // Multi-phase benchmark mode
         const enabledPhases = ['baseline'];
         if (config.scaling) enabledPhases.push('scaling');
-        if (config.stressAuth) enabledPhases.push('stress-auth');
-
         logSection('Multi-Phase Benchmark Mode');
         console.log(`Running phases: ${enabledPhases.join(', ')}\n`);
 
@@ -382,18 +542,14 @@ async function main() {
         const baselineOutputDir = path.join(config.outputDir, 'baseline');
         await runBenchmarkPhase(config, 'Baseline', config.workload, baselineOutputDir);
 
+        // Update hardware_config.json with CPU info from baseline logs
+        await updateHardwareConfigWithCpuInfo(path.join(baselineOutputDir, 'logs'), config.outputDir);
+
         // Phase 2: Scaling benchmark (if enabled)
         if (config.scaling) {
           await waitForScaleDown(config.scaleDownWait);
           const scalingOutputDir = path.join(config.outputDir, 'scaling');
           await runBenchmarkPhase(config, 'Scaling', 'workload-scaling.yml', scalingOutputDir);
-        }
-
-        // Phase 3: Stress Auth benchmark (if enabled)
-        if (config.stressAuth) {
-          await waitForScaleDown(config.scaleDownWait);
-          const stressAuthOutputDir = path.join(config.outputDir, 'stress-auth');
-          await runBenchmarkPhase(config, 'Stress Auth', 'workload-stress-auth.yml', stressAuthOutputDir);
         }
 
         // Write summary of all phases
@@ -416,18 +572,16 @@ async function main() {
       } else {
         // Single-phase benchmark (original behavior - baseline only)
         await resetCognitoUserPool();
-        await runBenchmark(config.experiment, config.workload, config.outputDir, config.auth);
+        await runBenchmark(config.experiment, config.workload, config.outputDir, config.auth, config.architecture);
 
         // Record end time (add 1 minute buffer to capture trailing metrics)
         const experimentEndTime = Date.now() + 60000;
 
         if (!config.skipMetrics) {
-          await collectMetrics(config.experiment, config.outputDir, experimentStartTime, config.architecture);
+          await collectMetrics(config.experiment, config.outputDir, experimentStartTime, config.architecture, config.auth);
 
-          // Collect Lambda logs for FaaS architecture and cleanup log groups after collection
-          if (config.architecture === 'faas') {
-            await collectAndCleanupLambdaLogs(config, config.outputDir, experimentStartTime, experimentEndTime);
-          }
+          // Note: Lambda log collection for FaaS is already handled by collectMetrics()
+          // Do NOT call collectAndCleanupLambdaLogs() again here - it would overwrite the logs!
 
           // Collect CloudWatch metrics for all architectures
           await collectCloudWatchMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
@@ -436,17 +590,51 @@ async function main() {
           await collectPricingMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
         }
 
+        // Update hardware_config.json with CPU info from collected logs
+        await updateHardwareConfigWithCpuInfo(path.join(config.outputDir, 'logs'), config.outputDir);
+
         await analyzeResults(config.experiment, config.outputDir);
       }
     }
 
     // Step 8: Destroy infrastructure if requested
+    let destroyFailed = false;
     if (config.destroy) {
-      await runDestroy(config.experiment, config.architecture);
-      cleanupBuildArtifacts(config.experiment, config.architecture);
+      try {
+        await runDestroy(config.experiment, config.architecture, config.auth);
+        cleanupBuildArtifacts(config.experiment, config.architecture);
+      } catch (destroyError) {
+        destroyFailed = true;
+        console.error('\n⚠️  Infrastructure destruction failed:', destroyError.message);
+        console.log('Analysis has already been completed. Results are available in the output directory.');
+        console.log('You may need to manually destroy the infrastructure or retry later.');
+        await waitForUserConfirmation('Infrastructure destruction failed. Please verify AWS resources are cleaned up.');
+      }
+
+      // Step 9: Clean up CloudWatch log groups AFTER terraform destroy
+      // This ensures Lambda functions are stopped before we delete their log groups
+      // (Lambda auto-recreates log groups if they're deleted while functions are still running)
+      if (config.architecture === 'faas' && config.runId) {
+        logSection('Cleaning Up CloudWatch Log Groups');
+        try {
+          await cleanupOldLogGroupsForRun(config.runId);
+        } catch (logError) {
+          console.warn('Warning: Could not cleanup CloudWatch logs:', logError.message);
+        }
+      }
+
+      // Clean up Lambda@Edge log groups if edge auth was used
+      if (config.auth === 'edge') {
+        logSection('Cleaning Up Lambda@Edge Log Groups');
+        try {
+          await cleanupAllEdgeLambdaLogs();
+        } catch (edgeLogError) {
+          console.warn('Warning: Could not cleanup Lambda@Edge logs:', edgeLogError.message);
+        }
+      }
     }
 
-    // Step 9: Upload results to S3
+    // Step 10: Upload results to S3
     const uploadSuccess = await uploadResultsToS3(
       config.outputDir,
       config.experiment,
@@ -470,8 +658,78 @@ async function main() {
     console.error('\n❌ Experiment failed:', error.message);
     console.error(error.stack);
 
-    // Cleanup and destroy on error
-    console.log('\nCleaning up due to error...');
+    // Write error description to file
+    const errorDescFile = path.join(config.outputDir, 'error_description.md');
+    const errorContent = `# Experiment Error
+
+**Error:** ${error.message}
+
+**Timestamp:** ${new Date().toISOString()}
+
+## Stack Trace
+\`\`\`
+${error.stack}
+\`\`\`
+
+## Configuration
+- Architecture: ${config.architecture}
+- Auth Strategy: ${config.auth}
+- Run ID: ${config.runId}
+`;
+    try {
+      fs.writeFileSync(errorDescFile, errorContent);
+      console.log(`Error description written to: ${errorDescFile}`);
+    } catch (writeError) {
+      console.warn('Warning: Could not write error description:', writeError.message);
+    }
+
+    // IMPORTANT: Collect logs/metrics BEFORE destroying infrastructure
+    // This ensures we capture all data even if cleanup fails
+    console.log('\nAttempting to collect logs and metrics before cleanup...');
+
+    // Get experiment timestamps for log collection
+    const errorRecoveryStartTime = experimentStartTime || Date.now() - 3600000; // Use recorded start time or 1 hour ago
+    const errorRecoveryEndTime = Date.now() + 60000; // 1 minute buffer
+
+    // Try to collect metrics (CloudWatch logs, Lambda logs, ECS logs)
+    try {
+      console.log('Collecting metrics...');
+      await collectMetrics(config.experiment, config.outputDir, errorRecoveryStartTime, config.architecture, config.auth);
+      console.log('✓ Metrics collection completed');
+    } catch (metricsError) {
+      console.warn('Warning: Could not collect metrics:', metricsError.message);
+    }
+
+    // Try to collect CloudWatch metrics
+    try {
+      console.log('Collecting CloudWatch metrics...');
+      await collectCloudWatchMetrics(config, config.outputDir, errorRecoveryStartTime, errorRecoveryEndTime);
+      console.log('✓ CloudWatch metrics collection completed');
+    } catch (cwError) {
+      console.warn('Warning: Could not collect CloudWatch metrics:', cwError.message);
+    }
+
+    // Try to collect pricing metrics
+    try {
+      console.log('Collecting pricing metrics...');
+      await collectPricingMetrics(config, config.outputDir, errorRecoveryStartTime, errorRecoveryEndTime);
+      console.log('✓ Pricing metrics collection completed');
+    } catch (pricingError) {
+      console.warn('Warning: Could not collect pricing metrics:', pricingError.message);
+    }
+
+    // Try to run analysis on collected logs
+    console.log('\nAttempting to analyze collected logs...');
+    try {
+      await analyzeResults(config.experiment, config.outputDir);
+      console.log('✓ Analysis completed on available logs');
+    } catch (analysisError) {
+      console.warn('Warning: Could not run analysis:', analysisError.message);
+    }
+
+    // Cleanup and destroy on error (logs already collected, so this can fail safely)
+    console.log('\nCleaning up infrastructure...');
+    let cleanupSucceeded = true;
     try {
       // Force destroy Redis containers first to prevent hanging
       console.log('Force destroying Redis containers...');
@@ -481,10 +739,36 @@ async function main() {
         console.warn('Warning: Could not force destroy Redis:', redisError.message);
       }
 
-      await runDestroy(config.experiment, config.architecture);
+      // Destroy infrastructure (logs already collected)
+      await runDestroy(config.experiment, config.architecture, config.auth);
       cleanupBuildArtifacts(config.experiment, config.architecture);
+
+      // Clean up CloudWatch log groups AFTER terraform destroy
+      // (Lambda auto-recreates log groups if they're deleted while functions are still running)
+      if (config.architecture === 'faas' && config.runId) {
+        console.log('Cleaning up CloudWatch log groups...');
+        try {
+          await cleanupOldLogGroupsForRun(config.runId);
+        } catch (logError) {
+          console.warn('Warning: Could not cleanup CloudWatch logs:', logError.message);
+        }
+      }
+
+      // Clean up Lambda@Edge log groups if edge auth was used
+      if (config.auth === 'edge') {
+        console.log('Cleaning up Lambda@Edge log groups...');
+        try {
+          await cleanupAllEdgeLambdaLogs();
+        } catch (edgeLogError) {
+          console.warn('Warning: Could not cleanup Lambda@Edge logs:', edgeLogError.message);
+        }
+      }
     } catch (cleanupError) {
-      console.error('Error during cleanup:', cleanupError.message);
+      cleanupSucceeded = false;
+      console.error('\n⚠️  Infrastructure cleanup failed:', cleanupError.message);
+      console.log('Logs and metrics have been collected and analyzed.');
+      console.log('You may need to manually destroy the infrastructure or retry later.');
+      await waitForUserConfirmation('Infrastructure cleanup failed. Please verify AWS resources are cleaned up before continuing.');
     }
 
     process.exit(1);

@@ -113,16 +113,42 @@ function beforeAnonymousRequest (requestParams, context, ee, next) {
   return beforeRequest(requestParams, context, ee, next, 'anonymous')
 }
 
+function beforeFailedAuthRequest (requestParams, context, ee, next) {
+  return beforeRequest(requestParams, context, ee, next, 'failed-auth')
+}
+
+/**
+ * beforeScenario hook - called before each scenario starts
+ * Used to initialize scenario-level state or logging
+ */
+function beforeScenario (context, ee, next) {
+  const phase = getPhaseInfo()
+  logEvent({
+    type: 'scenario-start',
+    scenarioName: context.scenario?.name || 'unknown'
+  }, phase)
+  return next()
+}
+
 function beforeRequest (requestParams, context, ee, next, authType) {
   const url = resolveVar(requestParams.url, context)
   const contextId = lib.helper.generateRandomID()
   const xPair = `${contextId}-${lib.helper.generateRandomID()}`
-  requestParams.headers = {}
+
+  // Preserve existing headers (including Authorization set by Artillery)
+  // Only initialize if not already set
+  if (!requestParams.headers) {
+    requestParams.headers = {}
+  }
+
+  // Add tracing headers
   requestParams.headers['x-context'] = contextId
   requestParams.headers['x-pair'] = xPair
 
-  if (context.vars.accessToken) {
-    requestParams.headers.Authorization = `Bearer ${context.vars.accessToken}`
+  // If token was captured from login, ensure Authorization header is set
+  // Note: Artillery captures as 'token' via 'as: token' in the workload
+  if (context.vars.token && !requestParams.headers.Authorization) {
+    requestParams.headers.Authorization = `Bearer ${context.vars.token}`
   }
 
   const phase = getPhaseInfo()
@@ -164,6 +190,10 @@ function afterAuthResponse (requestParams, response, context, ee, next) {
 
 function afterAnonymousResponse (requestParams, response, context, ee, next) {
   return afterResponse(requestParams, response, context, ee, next, 'anonymous')
+}
+
+function afterFailedAuthResponse (requestParams, response, context, ee, next) {
+  return afterResponse(requestParams, response, context, ee, next, 'failed-auth')
 }
 
 const timestamp = Math.round(Date.now() / 1000)
@@ -215,10 +245,20 @@ function emergencyEveryTwoMinutesFiveSecondsEach (requestParams, context, ee, ne
 }
 
 module.exports = {
+  // Scenario hooks
+  beforeScenario,
+
+  // Request hooks
   beforeAuthRequest,
   beforeAnonymousRequest,
+  beforeFailedAuthRequest,
+
+  // Response hooks
   afterAuthResponse,
   afterAnonymousResponse,
+  afterFailedAuthResponse,
+
+  // Emergency scenario hooks (for image-based scenarios)
   singleEmergency,
   emergencyEveryTwoMinutesFiveSecondsEach,
   emergencyNever,

@@ -218,26 +218,40 @@ def extract_endpoint(url):
     # Remove query params
     url = url.split('?')[0]
 
-    # Extract path after the base URL
-    parts = url.split('/')
+    # Use urllib to properly parse the URL and extract the path
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    path = parsed.path
 
-    # Find the path starting from 'frontend' or similar
+    # If path is empty or just /, return /
+    if not path or path == '/':
+        return '/'
+
+    # Split path into parts
+    parts = [p for p in path.split('/') if p]
+
+    # For FaaS URLs with 'api' prefix, skip the prefix keywords
+    # For microservices URLs, capture the full path
     path_parts = []
-    capture = False
-    for part in parts:
-        if part in ['frontend', 'api', 'dev', 'prod']:
-            capture = True
-        if capture and part:
-            path_parts.append(part)
+    skip_prefixes = {'api', 'dev', 'prod', 'frontend'}
+
+    for i, part in enumerate(parts):
+        # Skip known prefix parts at the start
+        if i == 0 and part.lower() in skip_prefixes:
+            continue
+        path_parts.append(part)
 
     if not path_parts:
-        return '/unknown'
+        return '/'
 
-    # Normalize dynamic parts (product IDs, etc.)
+    # Normalize dynamic parts (product IDs, UUIDs, etc.)
     normalized = []
     for part in path_parts:
-        # Check if it looks like an ID (alphanumeric, longer than 5 chars)
+        # Check if it looks like an ID (alphanumeric, longer than 5 chars with numbers)
         if len(part) > 5 and part.isalnum() and not part.isalpha():
+            normalized.append(':id')
+        # Check for UUID-like patterns
+        elif len(part) > 20 and '-' in part:
             normalized.append(':id')
         else:
             normalized.append(part)
@@ -730,6 +744,15 @@ def generate_insights(entries):
     endpoints = set(extract_endpoint(r.get('url', '')) for r in requests)
     functions = set(c.get('function', '') for c in function_calls if c.get('function'))
 
+    # Count auth operations: use authCheck events if available, otherwise count /setUser requests
+    # /setUser is the authentication endpoint where users login and receive tokens
+    auth_operations_count = len(auth_checks)
+    if auth_operations_count == 0:
+        # For ECS architectures, count /setUser endpoint as auth operations
+        auth_operations_count = sum(1 for r in requests
+                                    if extract_endpoint(r.get('url', '')) == '/setUser'
+                                    and r.get('status_code', 200) == 200)
+
     print(f"  Analyzing HTTP status...")
     http_status = analyze_http_status(requests)
 
@@ -764,7 +787,7 @@ def generate_insights(entries):
         },
         'overview': {
             'total_requests': len(requests),
-            'total_auth_operations': len(auth_checks),
+            'total_auth_operations': auth_operations_count,
             'unique_endpoints': len(endpoints),
             'unique_functions': len(functions),
         },

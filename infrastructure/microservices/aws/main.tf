@@ -287,7 +287,7 @@ resource "aws_ecs_task_definition" "service" {
         }
       ]
 
-      environment = [
+      environment = concat([
         {
           name  = "SERVICE_NAME"
           value = each.key
@@ -320,7 +320,24 @@ resource "aws_ecs_task_definition" "service" {
           name  = "COGNITO_CLIENT_ID"
           value = local.cognito_client_id
         }
-      ]
+      ], var.edge_public_key != "" ? [
+        {
+          name  = "EDGE_PUBLIC_KEY"
+          value = var.edge_public_key
+        }
+      ] : [],
+      var.jwt_private_key != "" ? [
+        {
+          name  = "JWT_PRIVATE_KEY"
+          value = var.jwt_private_key
+        }
+      ] : [],
+      var.jwt_public_key != "" ? [
+        {
+          name  = "JWT_PUBLIC_KEY"
+          value = var.jwt_public_key
+        }
+      ] : [])
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -398,7 +415,7 @@ resource "aws_appautoscaling_target" "service" {
   for_each = local.services
 
   max_capacity       = var.max_capacity
-  min_capacity       = var.min_capacity
+  min_capacity       = each.key == "frontend-service" ? var.min_capacity_frontend : var.min_capacity
   resource_id        = "service/${aws_ecs_cluster.microservices.name}/${aws_ecs_service.service[each.key].name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"

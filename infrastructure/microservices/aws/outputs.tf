@@ -90,3 +90,31 @@ output "service_names" {
     for service_name, service in aws_ecs_service.service : service_name => service.name
   }
 }
+
+output "scaling_config" {
+  description = "Per-service scaling configuration for database import"
+  value = {
+    for service_name, service in local.services : service_name => {
+      cpu_units    = service.cpu
+      memory_mb    = service.memory
+      min_capacity = service_name == "frontend-service" ? var.min_capacity_frontend : var.min_capacity
+      max_capacity = var.max_capacity
+      scaling_rules = merge(
+        {
+          cpu = {
+            target_value           = var.target_cpu_utilization
+            scale_in_cooldown_sec  = var.scale_in_cooldown
+            scale_out_cooldown_sec = var.scale_out_cooldown
+          }
+        },
+        service_name == "frontend-service" ? {
+          request_count = {
+            target_value           = var.target_request_count
+            scale_in_cooldown_sec  = var.scale_in_cooldown
+            scale_out_cooldown_sec = var.scale_out_cooldown
+          }
+        } : {}
+      )
+    }
+  }
+}

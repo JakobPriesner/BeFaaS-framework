@@ -84,29 +84,54 @@ function validateEnvironment(experiment) {
     }
   }
 
-  // Detect and set Docker Hub user
+  // Detect and set Docker Hub user (with timeout to prevent hanging)
   try {
-    const dockerInfo = execSync('docker info 2>/dev/null', { encoding: 'utf8' });
+    const dockerInfo = execSync('docker info 2>/dev/null', {
+      encoding: 'utf8',
+      timeout: 10000  // 10 second timeout
+    });
     const match = dockerInfo.match(/Username:\s+(.+)/);
     if (match) {
       process.env.TF_VAR_DOCKERHUB_USER = match[1].trim();
       console.log(`✓ Docker Hub user: ${process.env.TF_VAR_DOCKERHUB_USER}`);
     }
   } catch (error) {
-    console.log('⚠ Could not detect Docker Hub user');
+    if (error.killed) {
+      console.log('⚠ Docker info timed out - Docker may be starting up');
+    } else {
+      console.log('⚠ Could not detect Docker Hub user');
+    }
   }
 
-  // Set Terraform config file
-  process.env.TF_CLI_CONFIG_FILE = '/experiments/dev.tfrc';
+  // Set Terraform config file (only if running in Docker container)
+  const tfConfigPath = '/experiments/dev.tfrc';
+  if (fs.existsSync(tfConfigPath)) {
+    process.env.TF_CLI_CONFIG_FILE = tfConfigPath;
+  }
 
   console.log('✓ Environment validation completed');
 }
 
 function setHardwareConfig(config) {
-  // Set Lambda memory configuration for AWS
-  if (config.memory) {
+  logSection('Configuring Hardware');
+
+  // Set Lambda memory configuration for FaaS
+  if (config.architecture === 'faas' && config.memory) {
     process.env.TF_VAR_memory_size = config.memory.toString();
     console.log(`✓ Lambda memory configured: ${config.memory} MB`);
+  }
+
+  // Set Fargate CPU/Memory configuration for Monolith and Microservices
+  if (config.architecture === 'monolith' || config.architecture === 'microservices') {
+    if (config.cpu) {
+      process.env.TF_VAR_cpu = config.cpu.toString();
+      const vCPU = config.cpu / 1024;
+      console.log(`✓ Fargate CPU configured: ${config.cpu} units (${vCPU} vCPU)`);
+    }
+    if (config.memoryFargate) {
+      process.env.TF_VAR_memory = config.memoryFargate.toString();
+      console.log(`✓ Fargate memory configured: ${config.memoryFargate} MB`);
+    }
   }
 }
 

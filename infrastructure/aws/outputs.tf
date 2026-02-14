@@ -28,3 +28,8 @@ output "api_gateway_name" {
   description = "API Gateway v2 API Name"
   value       = data.terraform_remote_state.ep.outputs.aws_apigatewayv2_api.name
 }
+
+output "api_gateway_endpoint" {
+  description = "API Gateway endpoint URL"
+  value       = data.terraform_remote_state.ep.outputs.AWS_LAMBDA_ENDPOINT
+}

@@ -77,3 +77,22 @@ output "service_name" {
   description = "Name of the ECS service"
   value       = aws_ecs_service.monolith.name
 }
+
+output "scaling_config" {
+  description = "Per-service scaling configuration for database import"
+  value = {
+    monolith = {
+      cpu_units    = var.cpu
+      memory_mb    = var.memory
+      min_capacity = var.min_capacity
+      max_capacity = var.max_capacity
+      scaling_rules = {
+        request_count = {
+          target_value          = var.target_request_count
+          scale_in_cooldown_sec = var.scale_in_cooldown
+          scale_out_cooldown_sec = var.scale_out_cooldown
+        }
+      }
+    }
+  }
+}

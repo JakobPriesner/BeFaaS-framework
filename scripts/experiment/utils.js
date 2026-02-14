@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const readline = require('readline');
 
 // S3 bucket configuration for results upload
 const S3_BUCKET_NAME = 'jakobs-benchmark-results';
@@ -89,6 +90,32 @@ async function checkHealth(endpoints, maxRetries = 10, retryDelay = 3000) {
   return true;
 }
 
+/**
+ * Remove a path with retry logic for handling ENOTEMPTY errors
+ * (common with node_modules due to race conditions and symlinks)
+ */
+function removeWithRetry(targetPath, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      return true;
+    } catch (error) {
+      if (error.code === 'ENOTEMPTY' && attempt < maxRetries) {
+        console.log(`    Retry ${attempt}/${maxRetries} for ${targetPath}...`);
+        // Small delay before retry
+        const start = Date.now();
+        while (Date.now() - start < 500) { /* busy wait */ }
+      } else if (error.code === 'ENOENT') {
+        // Already deleted
+        return true;
+      } else {
+        throw error;
+      }
+    }
+  }
+  return false;
+}
+
 function cleanupBuildArtifacts(experiment, architecture) {
   logSection('Cleaning up build artifacts');
 
@@ -99,7 +126,10 @@ function cleanupBuildArtifacts(experiment, architecture) {
     // Shared functions build directory
     path.join(projectRoot, 'experiments', experiment, 'functions', '_build'),
     // Results directory for this architecture
-    path.join(projectRoot, 'results', experiment, `${architecture}-*`)
+    path.join(projectRoot, 'results', experiment, `${architecture}-*`),
+    // Edge auth artifacts
+    path.join(projectRoot, '.edge_public_key'),
+    path.join(projectRoot, '.edge_cloudfront_url')
   ];
 
   for (const cleanPath of pathsToClean) {
@@ -113,8 +143,10 @@ function cleanupBuildArtifacts(experiment, architecture) {
           if (entry.match(new RegExp(pattern.replace('*', '.*')))) {
             const fullPath = path.join(dirPath, entry);
             console.log(`  Removing: ${fullPath}`);
-            if (fs.existsSync(fullPath)) {
-              fs.rmSync(fullPath, { recursive: true, force: true });
+            try {
+              removeWithRetry(fullPath);
+            } catch (error) {
+              console.warn(`  Warning: Could not remove ${fullPath}: ${error.message}`);
             }
           }
         }
@@ -122,7 +154,11 @@ function cleanupBuildArtifacts(experiment, architecture) {
     } else {
       if (fs.existsSync(cleanPath)) {
         console.log(`  Removing: ${cleanPath}`);
-        fs.rmSync(cleanPath, { recursive: true, force: true });
+        try {
+          removeWithRetry(cleanPath);
+        } catch (error) {
+          console.warn(`  Warning: Could not remove ${cleanPath}: ${error.message}`);
+        }
       }
     }
   }
@@ -200,6 +236,55 @@ function setupLogging(outputDir) {
   return logFile;
 }
 
+/**
+ * Parse CPU info from collected BEFAAS logs
+ * Scans logs/aws.log for BEFAAS entries containing cpuInfo
+ * Uses line-by-line streaming to handle arbitrarily large log files.
+ * @param {string} logsDir - Path to the logs directory (containing aws.log)
+ * @returns {Promise<Object|null>} - CPU info object or null if not found
+ */
+async function parseCpuInfoFromLogs(logsDir) {
+  const logFile = path.join(logsDir, 'aws.log');
+  if (!fs.existsSync(logFile)) {
+    return null;
+  }
+
+  const rl = readline.createInterface({
+    input: fs.createReadStream(logFile, { encoding: 'utf8' }),
+    crlfDelay: Infinity
+  });
+
+  for await (const line of rl) {
+    if (!line.includes('cpuInfo')) continue;
+
+    try {
+      const parsed = JSON.parse(line);
+      // The log entry structure: { ..., event: { cpuInfo: { ... } } }
+      // But aws.log may contain the raw BEFAAS JSON or a CloudWatch-wrapped version
+      if (parsed.event && parsed.event.cpuInfo) {
+        rl.close();
+        return parsed.event.cpuInfo;
+      }
+      // Check if it's nested inside a CloudWatch message field
+      if (parsed.message) {
+        const befaasMatch = parsed.message.match(/BEFAAS:\s*(.+)/);
+        if (befaasMatch) {
+          const befaasData = JSON.parse(befaasMatch[1]);
+          if (befaasData.event && befaasData.event.cpuInfo) {
+            rl.close();
+            return befaasData.event.cpuInfo;
+          }
+        }
+      }
+    } catch (e) {
+      // Not valid JSON or parsing failed, try next line
+      continue;
+    }
+  }
+
+  return null;
+}
+
 module.exports = {
   S3_BUCKET_NAME,
   S3_REGION,
@@ -208,5 +293,6 @@ module.exports = {
   cleanupBuildArtifacts,
   deleteLocalResults,
   uploadResultsToS3,
-  setupLogging
+  setupLogging,
+  parseCpuInfoFromLogs
 };

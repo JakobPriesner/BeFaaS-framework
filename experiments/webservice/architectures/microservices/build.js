@@ -13,6 +13,7 @@ const services = {
       'aws-sdk': '^2.1400.0',
       'aws-jwt-verify': '^4.0.0',
       axios: '^1.4.0',
+      jose: '^5.2.0',
       jsonwebtoken: '^9.0.2'
     },
     port: 3002
@@ -33,14 +34,19 @@ const services = {
     functions: ['login', 'register'],
     copyFrontendHandlers: true, // Special flag to copy frontend handlers and templates
     dependencies: {
+      '@aws-sdk/client-cognito-identity-provider': '^3.705.0',
       '@befaas/lib': '*',
-      express: '^4.18.2',
+      '@smithy/node-http-handler': '^3.3.2',
+      axios: '^1.4.0',
+      bcryptjs: '^2.4.3', // For bcrypt-hs256 algorithm variant
       'cookie-parser': '^1.4.6',
+      express: '^4.18.2',
+      'hash-wasm': '^4.11.0', // For argon2id-eddsa algorithm variant
+      ioredis: '^5.3.2', // For 'none' auth mode user validation
+      jose: '^5.2.0', // For argon2id-eddsa algorithm variant
+      jsonwebtoken: '^9.0.2', // For bcrypt-hs256 algorithm variant
       lodash: '^4.17.21',
-      nunjucks: '^3.2.4',
-      'aws-sdk': '^2.1400.0',
-      '@aws-sdk/client-cognito-identity-provider': '^3.400.0',
-      axios: '^1.4.0'
+      nunjucks: '^3.2.4'
     },
     port: 3000
   },
@@ -53,6 +59,7 @@ const services = {
       'aws-jwt-verify': '^4.0.0',
       'card-validator': '^8.1.1',
       axios: '^1.4.0',
+      jose: '^5.2.0',
       jsonwebtoken: '^9.0.2'
     },
     port: 3003
@@ -71,7 +78,7 @@ const services = {
   }
 };
 
-function copyFunctionToService(functionName, serviceDir, authStrategy) {
+function copyFunctionToService(functionName, serviceDir, authStrategy, algorithm) {
   const functionsDir = path.join(serviceDir, 'functions');
   const functionDir = path.join(functionsDir, functionName);
 
@@ -81,17 +88,21 @@ function copyFunctionToService(functionName, serviceDir, authStrategy) {
 
   // Functions that should use mock handlers in 'none' auth mode
   const authMockFunctions = ['login', 'register'];
-  const authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+  let authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+  if (algorithm) {
+    authStrategyDir = path.join(authStrategyDir, 'algorithms', algorithm);
+  }
 
   let srcPath;
-  // For 'none' auth strategy, use mock handlers for login and register to skip Cognito calls
-  if (authStrategy === 'none' && authMockFunctions.includes(functionName)) {
-    const mockHandlerPath = path.join(authStrategyDir, `${functionName}.js`);
-    if (fs.existsSync(mockHandlerPath)) {
-      srcPath = mockHandlerPath;
-      console.log(`    Using mock ${functionName} handler for 'none' auth strategy`);
+  // For auth strategies with custom login/register handlers, use those instead of default Cognito handlers
+  if (authMockFunctions.includes(functionName)) {
+    const customHandlerPath = path.join(authStrategyDir, `${functionName}.js`);
+    if (fs.existsSync(customHandlerPath)) {
+      srcPath = customHandlerPath;
+      console.log(`    Using custom ${functionName} handler from '${authStrategy}' auth strategy`);
     } else {
       srcPath = path.join(__dirname, '..', '..', 'functions', functionName, 'index.js');
+      console.log(`    Using default ${functionName} handler (no custom handler for '${authStrategy}')`);
     }
   } else {
     srcPath = path.join(__dirname, '..', '..', 'functions', functionName, 'index.js');
@@ -108,8 +119,7 @@ function copyFunctionToService(functionName, serviceDir, authStrategy) {
 
   // Copy auth file directly into function directory (functions require './auth')
   if (content.includes("require('./auth')")) {
-    const authSrcDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
-    const authSrcFile = path.join(authSrcDir, 'index.js');
+    const authSrcFile = path.join(authStrategyDir, 'index.js');
     const authDestFile = path.join(functionDir, 'auth.js');
     if (fs.existsSync(authSrcFile)) {
       fs.copyFileSync(authSrcFile, authDestFile);
@@ -117,13 +127,16 @@ function copyFunctionToService(functionName, serviceDir, authStrategy) {
   }
 }
 
-function copyAuthStrategy(serviceDir, authStrategy) {
+function copyAuthStrategy(serviceDir, authStrategy, algorithm) {
   const authDir = path.join(serviceDir, 'auth');
   if (!fs.existsSync(authDir)) {
     fs.mkdirSync(authDir, { recursive: true });
   }
 
-  const authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+  let authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+  if (algorithm) {
+    authStrategyDir = path.join(authStrategyDir, 'algorithms', algorithm);
+  }
   const authFiles = fs.readdirSync(authStrategyDir);
 
   authFiles.forEach(file => {
@@ -141,6 +154,7 @@ function copySharedModules(serviceDir) {
     fs.mkdirSync(sharedDir, { recursive: true });
   }
 
+  // Copy microservices-specific shared files
   const sharedSrcDir = path.join(__dirname, 'shared');
   const sharedFiles = fs.readdirSync(sharedSrcDir);
 
@@ -149,6 +163,23 @@ function copySharedModules(serviceDir) {
     const destPath = path.join(sharedDir, file);
     if (fs.statSync(srcPath).isFile()) {
       fs.copyFileSync(srcPath, destPath);
+    }
+  });
+
+  // Copy architectures-level shared utilities (call.js, serviceConfig.js) to shared/arch-shared/
+  const archSharedSrcDir = path.join(__dirname, '..', 'shared');
+  const archSharedDestDir = path.join(sharedDir, 'arch-shared');
+  if (!fs.existsSync(archSharedDestDir)) {
+    fs.mkdirSync(archSharedDestDir, { recursive: true });
+  }
+
+  const archSharedFiles = ['call.js', 'serviceConfig.js', 'authConfig.js', 'metrics.js'];
+  archSharedFiles.forEach(file => {
+    const srcPath = path.join(archSharedSrcDir, file);
+    const destPath = path.join(archSharedDestDir, file);
+    if (fs.existsSync(srcPath)) {
+      fs.copyFileSync(srcPath, destPath);
+      console.log(`    Copied arch-shared/${file}`);
     }
   });
 }
@@ -278,7 +309,7 @@ CMD ["node", "index.js"]
   }
 }
 
-function buildService(serviceName, serviceConfig, tmpDir, authStrategy) {
+function buildService(serviceName, serviceConfig, tmpDir, authStrategy, algorithm) {
   console.log(`  Building ${serviceName}...`);
 
   const serviceDir = path.join(tmpDir, serviceName);
@@ -299,7 +330,7 @@ function buildService(serviceName, serviceConfig, tmpDir, authStrategy) {
 
   // Copy all functions for this service
   serviceConfig.functions.forEach(functionName => {
-    copyFunctionToService(functionName, serviceDir, authStrategy);
+    copyFunctionToService(functionName, serviceDir, authStrategy, algorithm);
   });
 
   // Copy frontend handlers and templates if needed (for frontend-service)
@@ -321,7 +352,7 @@ function buildService(serviceName, serviceConfig, tmpDir, authStrategy) {
   copySharedModules(serviceDir);
 
   // Copy auth strategy
-  copyAuthStrategy(serviceDir, authStrategy);
+  copyAuthStrategy(serviceDir, authStrategy, algorithm);
 
   // Create package.json
   const packageJson = {
@@ -339,8 +370,8 @@ function buildService(serviceName, serviceConfig, tmpDir, authStrategy) {
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
 }
 
-async function build(tmpDir, authStrategy) {
-  console.log(`Building Microservices architecture for use case`);
+async function build(tmpDir, authStrategy, bundleMode = 'minimal', algorithm = null) {
+  console.log(`Building Microservices architecture for use case${algorithm ? ` (algorithm: ${algorithm})` : ''}`);
 
   // Create the temporary directory, if not exists
   if (!fs.existsSync(tmpDir)) {
@@ -349,7 +380,7 @@ async function build(tmpDir, authStrategy) {
 
   // Build all services
   Object.entries(services).forEach(([serviceName, serviceConfig]) => {
-    buildService(serviceName, serviceConfig, tmpDir, authStrategy);
+    buildService(serviceName, serviceConfig, tmpDir, authStrategy, algorithm);
   });
 
   console.log(`Build complete for Microservices in ${tmpDir}`);
@@ -359,11 +390,12 @@ module.exports = build;
 
 // Allow running as a standalone script
 if (require.main === module) {
-  const authStrategy = process.argv[2] || 'none';
-  const outputDir = process.argv[3] || path.join(__dirname, '_build');
+  const outputDir = process.argv[2] || path.join(__dirname, '_build');
+  const authStrategy = process.argv[3] || 'none';
+  const algorithm = process.argv[4] || null;
 
-  console.log(`Running build with auth: ${authStrategy}, output: ${outputDir}`);
-  build(outputDir, authStrategy)
+  console.log(`Running build with auth: ${authStrategy}, output: ${outputDir}${algorithm ? `, algorithm: ${algorithm}` : ''}`);
+  build(outputDir, authStrategy, 'minimal', algorithm)
     .then(() => process.exit(0))
     .catch(error => {
       console.error('Build failed:', error);

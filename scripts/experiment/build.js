@@ -2,8 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { logSection } = require('./utils');
 
-async function runBuild(experiment, architecture, auth, bundleMode = 'minimal') {
-  logSection(`Building ${experiment}/${architecture} architecture with ${auth} auth`);
+async function runBuild(experiment, architecture, auth, bundleMode = 'minimal', algorithm = null) {
+  logSection(`Building ${experiment}/${architecture} architecture with ${auth} auth${algorithm ? ` (algorithm: ${algorithm})` : ''}`);
 
   const projectRoot = path.join(__dirname, '..', '..');
   const buildScript = path.join(projectRoot, 'experiments', experiment, 'architectures', architecture, 'build.js');
@@ -23,7 +23,8 @@ async function runBuild(experiment, architecture, auth, bundleMode = 'minimal') 
 
   // Run architecture-specific build
   // Pass bundleMode for FaaS architecture (ignored by other architectures)
-  await build(tmpDir, auth, bundleMode);
+  // Pass algorithm for service-integrated-manual auth (selects algorithm variant)
+  await build(tmpDir, auth, bundleMode, algorithm);
 
   console.log(`✓ Build completed successfully`);
   return tmpDir;

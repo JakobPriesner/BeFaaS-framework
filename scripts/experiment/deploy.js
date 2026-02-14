@@ -1,13 +1,55 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { logSection } = require('./utils');
 
-async function runDeploy(experiment, architecture, buildDir) {
+async function runDeploy(experiment, architecture, buildDir, authMethod, algorithm = null) {
   logSection(`Deploying ${experiment}/${architecture} architecture`);
 
   try {
     let endpoints = [];
+    let edgeKeyPair = null;
+
+    // If using argon2id-eddsa algorithm, generate Ed25519 key pair for JWT signing
+    if (algorithm === 'argon2id-eddsa') {
+      logSection('Preparing JWT Signing Keys (EdDSA)');
+
+      const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+      });
+
+      // Base64-encode PEM keys for environment variable transport
+      process.env.JWT_PRIVATE_KEY = Buffer.from(privateKey).toString('base64');
+      process.env.JWT_PUBLIC_KEY = Buffer.from(publicKey).toString('base64');
+
+      console.log('Generated Ed25519 key pair for JWT signing');
+    }
+
+    // If using edge authentication, generate keys before main deployment
+    // so EDGE_PUBLIC_KEY is available in environment variables
+    if (authMethod === 'edge') {
+      logSection('Preparing Edge Authentication Keys');
+
+      const { generateEd25519KeyPair } = require('../deploy-edge-auth');
+
+      // Generate fresh keys for this deployment
+      // Note: SSM parameter lookup is skipped here because the terraform project name
+      // (with random suffix) isn't known until after experiment infrastructure is deployed.
+      // Keys are stored in SSM after edge-auth deployment for potential future reuse.
+      edgeKeyPair = generateEd25519KeyPair();
+      console.log('Generated new Ed25519 key pair');
+
+      // Set EDGE_PUBLIC_KEY environment variable for main deployment
+      process.env.EDGE_PUBLIC_KEY = edgeKeyPair.publicKey;
+
+      // Store public key for backends
+      const projectRoot = path.join(__dirname, '..', '..');
+      const edgeKeyFile = path.join(projectRoot, '.edge_public_key');
+      fs.writeFileSync(edgeKeyFile, edgeKeyPair.publicKey);
+      console.log(`Edge public key saved to: ${edgeKeyFile}`);
+    }
 
     switch (architecture) {
       case 'faas': {
@@ -32,6 +74,57 @@ async function runDeploy(experiment, architecture, buildDir) {
         throw new Error(`Unknown architecture: ${architecture}`);
     }
 
+    // If using edge authentication, deploy CloudFront in front of the origin
+    if (authMethod === 'edge') {
+      logSection('Deploying Edge Authentication');
+
+      const { deployEdgeAuth } = require('../deploy-edge-auth');
+
+      // Extract origin domain from endpoints
+      // Endpoints are URLs like https://xxx.execute-api.us-east-1.amazonaws.com or http://xxx.elb.amazonaws.com
+      if (endpoints.length === 0) {
+        throw new Error('No endpoints available for edge auth deployment');
+      }
+
+      const originUrl = new URL(endpoints[0]);
+      const originDomain = originUrl.hostname;
+
+      // Determine origin protocol based on architecture
+      // API Gateway uses HTTPS, ALB uses HTTP
+      const originProtocol = architecture === 'faas' ? 'https-only' : 'http-only';
+
+      console.log(`Origin domain: ${originDomain}`);
+      console.log(`Origin protocol: ${originProtocol}`);
+
+      // Get the actual project name from terraform output (matches the infrastructure naming)
+      const projectRoot = path.join(__dirname, '..', '..');
+      const experimentInfraDir = path.join(projectRoot, 'infrastructure', 'experiment');
+      const projectName = execSync('terraform output -raw project_name', {
+        cwd: experimentInfraDir,
+        encoding: 'utf8'
+      }).trim();
+      console.log(`Using project name from terraform: ${projectName}`);
+
+      const edgeConfig = await deployEdgeAuth(projectName, originDomain, {
+        originProtocol,
+        originHttpPort: 80,
+        originHttpsPort: 443,
+        keyPair: edgeKeyPair  // Pass pre-generated keys
+      });
+
+      // Replace endpoints with CloudFront URL + /frontend path for health checking
+      // The base CloudFront URL returns 403 because there's no root route on API Gateway
+      endpoints = [`${edgeConfig.cloudfrontUrl}/frontend`];
+
+      // Store the CloudFront URL for workload.sh to use
+      const edgeUrlFile = path.join(projectRoot, '.edge_cloudfront_url');
+      fs.writeFileSync(edgeUrlFile, edgeConfig.cloudfrontUrl);
+
+      console.log(`✓ Edge authentication deployed`);
+      console.log(`  CloudFront URL: ${edgeConfig.cloudfrontUrl}`);
+      console.log(`  Health check URL: ${endpoints[0]}`);
+    }
+
     console.log('✓ Deployment completed');
     return endpoints;
 
@@ -41,10 +134,36 @@ async function runDeploy(experiment, architecture, buildDir) {
   }
 }
 
-async function runDestroy(experiment, architecture) {
+async function runDestroy(experiment, architecture, authMethod) {
   logSection(`Destroying ${experiment}/${architecture} infrastructure`);
 
   try {
+    // Destroy edge auth first (if it exists)
+    // Edge auth must be destroyed before the origin (API Gateway/ALB)
+    if (authMethod === 'edge') {
+      try {
+        const { destroyEdgeAuth } = require('../deploy-edge-auth');
+        // Get the project name from terraform state (if it exists)
+        const projectRoot = path.join(__dirname, '..', '..');
+        const experimentInfraDir = path.join(projectRoot, 'infrastructure', 'experiment');
+        let projectName;
+        try {
+          projectName = execSync('terraform output -raw project_name', {
+            cwd: experimentInfraDir,
+            encoding: 'utf8',
+            stdio: ['pipe', 'pipe', 'pipe']
+          }).trim();
+        } catch {
+          // Fallback if terraform state doesn't exist
+          projectName = `befaas-${experiment}`;
+        }
+        await destroyEdgeAuth(projectName);
+      } catch (edgeError) {
+        console.warn('Warning: Could not destroy edge auth:', edgeError.message);
+        // Continue with main infrastructure destruction
+      }
+    }
+
     switch (architecture) {
       case 'faas': {
         const { destroyFaaS } = require('../deploy-faas');
@@ -303,16 +422,46 @@ async function forceDestroyRedis(experiment) {
 
       if (instanceIds.length > 0) {
         console.log(`Found instance IDs: ${instanceIds.join(', ')}`);
+        const awsRegion = process.env.AWS_REGION || 'us-east-1';
 
         for (const instanceId of instanceIds) {
           try {
-            execSync(`aws ec2 terminate-instances --instance-ids ${instanceId}`, {
+            execSync(`aws ec2 terminate-instances --instance-ids ${instanceId} --region ${awsRegion}`, {
               timeout: 10000,
               stdio: 'pipe'
             });
-            console.log(`  ✓ Terminated instance ${instanceId}`);
+            console.log(`  ✓ Initiated termination for instance ${instanceId}`);
           } catch (error) {
             console.log(`  ⚠ Failed to terminate instance ${instanceId}: ${error.message}`);
+          }
+        }
+
+        // Wait for instances to actually terminate (prevents VPC deletion issues)
+        console.log('Waiting for Redis instances to fully terminate...');
+        const maxWaitMs = 180000; // 3 minutes max wait
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWaitMs) {
+          try {
+            const result = execSync(
+              `aws ec2 describe-instances --instance-ids ${instanceIds.join(' ')} --query "Reservations[*].Instances[*].State.Name" --output text --region ${awsRegion}`,
+              { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+            ).trim();
+
+            const states = result.split(/\s+/).filter(s => s);
+            const nonTerminated = states.filter(s => s !== 'terminated');
+
+            if (nonTerminated.length === 0) {
+              console.log('  ✓ All Redis instances terminated');
+              break;
+            }
+
+            console.log(`  Waiting for ${nonTerminated.length} instance(s) to terminate (current states: ${states.join(', ')})...`);
+            await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10s between checks
+          } catch (error) {
+            // Instances might not exist anymore, which is fine
+            console.log('  ✓ Instances no longer exist');
+            break;
           }
         }
       }

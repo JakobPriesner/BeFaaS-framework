@@ -132,7 +132,12 @@ resource "aws_lambda_function" "fn" {
       },
       # Add all Lambda function names for direct invocation (bypasses API Gateway)
       local.lambda_fn_env_vars,
-      var.fn_env
+      var.fn_env,
+      # Add edge public key if configured
+      var.edge_public_key != "" ? { EDGE_PUBLIC_KEY = var.edge_public_key } : {},
+      # Add JWT signing keys for service-integrated-manual auth
+      var.jwt_private_key != "" ? { JWT_PRIVATE_KEY = var.jwt_private_key } : {},
+      var.jwt_public_key != "" ? { JWT_PUBLIC_KEY = var.jwt_public_key } : {}
     )
   }
 

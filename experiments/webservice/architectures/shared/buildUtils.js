@@ -162,11 +162,36 @@ function cleanDirectory(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+/**
+ * Recursively copies a directory from src to dest
+ * @param {string} src - Source directory
+ * @param {string} dest - Destination directory
+ */
+function copyDirectoryRecursive(src, dest) {
+  if (!fs.existsSync(dest)) {
+    fs.mkdirSync(dest, { recursive: true });
+  }
+
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+
+    if (entry.isDirectory()) {
+      copyDirectoryRecursive(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
 module.exports = {
   bundleAndZip,
   installDependencies,
   buildDockerImage,
   pushDockerImage,
   createZip,
-  cleanDirectory
+  cleanDirectory,
+  copyDirectoryRecursive
 };

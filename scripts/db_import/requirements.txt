@@ -1,0 +1,7 @@
+# BeFaaS Benchmark Database Import - Dependencies
+
+# Core database ORM (SQLAlchemy 2.0+)
+sqlalchemy>=2.0.0
+
+# PostgreSQL driver (required)
+psycopg2-binary>=2.9.0

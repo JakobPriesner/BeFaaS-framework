@@ -1,27 +1,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { copyDirectoryRecursive } = require('../shared/buildUtils');
 
-function copyDirectoryRecursive(src, dest) {
-  if (!fs.existsSync(dest)) {
-    fs.mkdirSync(dest, { recursive: true });
-  }
-
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-
-    if (entry.isDirectory()) {
-      copyDirectoryRecursive(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
-}
-
-async function buildSingleFunction(useCase, tmpDir, authStrategy) {
+async function buildSingleFunction(useCase, tmpDir, authStrategy, algorithm) {
   console.log(`Building FaaS architecture for use case: ${useCase}`);
 
   // 1. Create the temporary directory, if not exists
@@ -42,6 +24,22 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
     const packagePath = path.join(__dirname, 'package.json');
     const destPackagePath = path.join(tmpDir, 'package.json');
     fs.copyFileSync(packagePath, destPackagePath);
+
+    // Copy shared directory for metrics and other utilities
+    const sharedDir = path.join(__dirname, '..', 'shared');
+    const destSharedDir = path.join(tmpDir, 'shared');
+    if (!fs.existsSync(destSharedDir)) {
+      fs.mkdirSync(destSharedDir, { recursive: true });
+    }
+    const frontendSharedFiles = ['metrics.js'];
+    for (const file of frontendSharedFiles) {
+      const srcPath = path.join(sharedDir, file);
+      const destPath = path.join(destSharedDir, file);
+      if (fs.existsSync(srcPath)) {
+        fs.copyFileSync(srcPath, destPath);
+        console.log(`  ✓ Copied shared/${file}`);
+      }
+    }
 
     // Copy experiment.json
     const experimentJsonPath = path.join(__dirname, '..', '..', 'experiment.json');
@@ -67,15 +65,27 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
   const destRestHandlerPath = path.join(tmpDir, 'restHandler.js');
   fs.copyFileSync(restHandlerPath, destRestHandlerPath);
 
-  // 2c. Copy ./authConfig.js to tmpDir (auth configuration)
-  const authConfigPath = path.join(__dirname, 'authConfig.js');
-  const destAuthConfigPath = path.join(tmpDir, 'authConfig.js');
-  fs.copyFileSync(authConfigPath, destAuthConfigPath);
+  // 2c. Copy ./call.js to tmpDir (FaaS call provider with direct Lambda invocation)
+  const callPath = path.join(__dirname, 'call.js');
+  const destCallPath = path.join(tmpDir, 'call.js');
+  fs.copyFileSync(callPath, destCallPath);
 
-  // 2d. Copy ./authCall.js to tmpDir (auth call wrapper for function-to-function calls)
-  const authCallPath = path.join(__dirname, 'authCall.js');
-  const destAuthCallPath = path.join(tmpDir, 'authCall.js');
-  fs.copyFileSync(authCallPath, destAuthCallPath);
+  // 2d. Copy shared modules to tmpDir/shared/ (required by restHandler.js and call.js)
+  const sharedDir = path.join(__dirname, '..', 'shared');
+  const destSharedDir = path.join(tmpDir, 'shared');
+  if (!fs.existsSync(destSharedDir)) {
+    fs.mkdirSync(destSharedDir, { recursive: true });
+  }
+
+  const sharedFiles = ['authConfig.js', 'call.js', 'serviceConfig.js', 'metrics.js'];
+  for (const file of sharedFiles) {
+    const srcPath = path.join(sharedDir, file);
+    const destPath = path.join(destSharedDir, file);
+    if (fs.existsSync(srcPath)) {
+      fs.copyFileSync(srcPath, destPath);
+      console.log(`  ✓ Copied shared/${file}`);
+    }
+  }
 
   // 3. Copy ./package.json to tmpDir
   const packagePath = path.join(__dirname, 'package.json');
@@ -84,20 +94,23 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
 
   // 4. Copy the usecase from the experiments/webservice/functions/<usecase>/index.js to handler.js
   // Also rewrite require paths for shared modules
-  // For 'none' auth strategy, use mock handlers for login and register to skip Cognito calls
-  const authMockFunctions = ['login', 'register'];
-  const authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+  // For auth strategies with custom login/register handlers, use those instead of default Cognito handlers
+  const authOverrideFunctions = ['login', 'register'];
+  let authStrategyDir = path.join(__dirname, '..', '..', 'authentication', authStrategy);
+  if (algorithm) {
+    authStrategyDir = path.join(authStrategyDir, 'algorithms', algorithm);
+  }
 
   let useCasePath;
-  if (authStrategy === 'none' && authMockFunctions.includes(useCase)) {
-    // Use mock handler from authentication/none directory
-    const mockHandlerPath = path.join(authStrategyDir, `${useCase}.js`);
-    if (fs.existsSync(mockHandlerPath)) {
-      useCasePath = mockHandlerPath;
-      console.log(`  Using mock ${useCase} handler for 'none' auth strategy`);
+  if (authOverrideFunctions.includes(useCase)) {
+    // Check if the auth strategy has a custom handler for this function
+    const customHandlerPath = path.join(authStrategyDir, `${useCase}.js`);
+    if (fs.existsSync(customHandlerPath)) {
+      useCasePath = customHandlerPath;
+      console.log(`  Using custom ${useCase} handler from '${authStrategy}' auth strategy`);
     } else {
       useCasePath = path.join(useCaseDir, 'index.js');
-      console.warn(`  ⚠️  Mock handler not found for ${useCase}, using real handler`);
+      console.log(`  Using default ${useCase} handler (no custom handler for '${authStrategy}')`);
     }
   } else {
     useCasePath = path.join(useCaseDir, 'index.js');
@@ -110,6 +123,12 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
   // Rewrite require paths from ../../<module> to ./<module>
   // This is needed because in the Lambda package structure, shared modules are at the same level as handler.js
   handlerCode = handlerCode.replace(/require\(['"]\.\.\/\.\.\/([^'"]+)['"]\)/g, "require('./$1')");
+
+  // Ensure @befaas/lib is loaded to initialize BEFAAS logging
+  // This triggers the coldstart log and enables performance tracking
+  if (!handlerCode.includes("@befaas/lib")) {
+    handlerCode = "require('@befaas/lib'); // Initialize BEFAAS logging\n" + handlerCode;
+  }
 
   fs.writeFileSync(handlerPath, handlerCode, 'utf8');
 
@@ -177,8 +196,8 @@ async function buildSingleFunction(useCase, tmpDir, authStrategy) {
   console.log(`Build complete for ${useCase} in ${tmpDir}`);
 }
 
-async function build(tmpDir, authStrategy, bundleMode = 'minimal') {
-  console.log(`Building FaaS architecture with auth strategy: ${authStrategy}, bundle mode: ${bundleMode}`);
+async function build(tmpDir, authStrategy, bundleMode = 'minimal', algorithm = null) {
+  console.log(`Building FaaS architecture with auth strategy: ${authStrategy}, bundle mode: ${bundleMode}${algorithm ? `, algorithm: ${algorithm}` : ''}`);
 
   let useCases;
   const functionsDir = path.join(__dirname, '..', '..', 'functions');
@@ -207,7 +226,7 @@ async function build(tmpDir, authStrategy, bundleMode = 'minimal') {
   // Build each function in its own directory
   for (const useCase of useCases) {
     const functionDir = path.join(tmpDir, useCase);
-    await buildSingleFunction(useCase, functionDir, authStrategy);
+    await buildSingleFunction(useCase, functionDir, authStrategy, algorithm);
   }
 
   console.log(`Build complete for all functions in ${tmpDir}`);
@@ -217,11 +236,13 @@ module.exports = build;
 
 // Allow running as a standalone script
 if (require.main === module) {
-  const authStrategy = process.argv[2] || 'none';
-  const outputDir = process.argv[3] || path.join(__dirname, '_build');
+  const outputDir = process.argv[2] || path.join(__dirname, '_build');
+  const authStrategy = process.argv[3] || 'none';
+  const bundleMode = process.argv[4] || 'minimal';
+  const algorithm = process.argv[5] || null;
 
-  console.log(`Running build with auth: ${authStrategy}, output: ${outputDir}`);
-  build(outputDir, authStrategy)
+  console.log(`Running build with auth: ${authStrategy}, output: ${outputDir}${algorithm ? `, algorithm: ${algorithm}` : ''}`);
+  build(outputDir, authStrategy, bundleMode, algorithm)
     .then(() => process.exit(0))
     .catch(error => {
       console.error('Build failed:', error);

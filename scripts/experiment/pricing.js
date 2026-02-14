@@ -1,11 +1,11 @@
 const fs = require('fs')
 const path = require('path')
-const { execSync } = require('child_process')
 const {
   CloudWatchClient,
   GetMetricDataCommand
 } = require('@aws-sdk/client-cloudwatch')
 const { logSection } = require('./utils')
+const { getTerraformOutputs } = require('./terraform-helpers')
 
 // ============================================================================
 // PRICING CONSTANTS (us-east-1, December 2024) - VALIDATED
@@ -48,28 +48,6 @@ const PRICING = {
     mauNext50k: 0.0046, // $0.0046 per MAU (50K-100K)
     mauNext900k: 0.00325, // $0.00325 per MAU (100K-1M)
     mauOver1m: 0.0025 // $0.0025 per MAU (over 1M)
-  }
-}
-
-// ============================================================================
-// TERRAFORM OUTPUT HELPERS
-// ============================================================================
-
-function getTerraformOutputs (infraDir) {
-  try {
-    const output = execSync('terraform output -json', {
-      cwd: infraDir,
-      encoding: 'utf8'
-    })
-    const outputs = JSON.parse(output)
-    const result = {}
-    for (const [key, val] of Object.entries(outputs)) {
-      result[key] = val.value
-    }
-    return result
-  } catch (error) {
-    console.log(`Could not get Terraform outputs from ${infraDir}: ${error.message}`)
-    return null
   }
 }
 
@@ -462,9 +440,9 @@ async function collectMonolithPricing (config, projectRoot, awsRegion, startTime
   const durationHours = (endTime - startTime) / 3600000
   const period = 60
 
-  // Default task configuration (from variables.tf)
-  const taskCpu = 256
-  const taskMemory = 512
+  // Task configuration from experiment config
+  const taskCpu = config.cpu || 256
+  const taskMemory = config.memoryFargate || 512
 
   const metricQueries = []
   let queryId = 0
@@ -602,9 +580,9 @@ async function collectMicroservicesPricing (config, projectRoot, awsRegion, star
   console.log(`  Services: ${Object.keys(serviceNames).join(', ')}`)
   console.log(`  ALB: ${albArnSuffix}`)
 
-  // Default service configurations (from main.tf)
-  const defaultTaskCpu = 256
-  const defaultTaskMemory = 512
+  // Service configurations from experiment config
+  const defaultTaskCpu = config.cpu || 256
+  const defaultTaskMemory = config.memoryFargate || 512
 
   const cloudwatch = new CloudWatchClient({ region: awsRegion })
   const startDate = new Date(startTime)

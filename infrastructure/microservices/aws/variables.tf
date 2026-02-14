@@ -24,7 +24,13 @@ variable "memory" {
 
 # Auto-Scaling Configuration
 variable "min_capacity" {
-  description = "Minimum number of tasks for auto-scaling per service"
+  description = "Minimum number of tasks for auto-scaling for backend services"
+  type        = number
+  default     = 1
+}
+
+variable "min_capacity_frontend" {
+  description = "Minimum number of tasks for auto-scaling for frontend service"
   type        = number
   default     = 2
 }
@@ -44,7 +50,7 @@ variable "target_cpu_utilization" {
 variable "target_request_count" {
   description = "Target ALB requests per target per minute for auto-scaling (frontend-service only)"
   type        = number
-  default     = 1500
+  default     = 5000
 }
 
 variable "scale_out_cooldown" {
@@ -57,4 +63,23 @@ variable "scale_in_cooldown" {
   description = "Scale-in cooldown period in seconds (Slow Shrinkage) - Microservices: 180s"
   type        = number
   default     = 180
+}
+
+variable "edge_public_key" {
+  description = "Ed25519 public key for edge authentication (base64 encoded)"
+  type        = string
+  default     = ""
+}
+
+variable "jwt_private_key" {
+  description = "Ed25519 private key for JWT signing (base64-encoded PEM)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "jwt_public_key" {
+  description = "Ed25519 public key for JWT verification (base64-encoded PEM)"
+  type        = string
+  default     = ""
 }

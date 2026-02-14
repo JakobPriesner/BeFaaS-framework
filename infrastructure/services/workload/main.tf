@@ -10,6 +10,12 @@ variable "auth_mode" {
   default     = "none"
 }
 
+variable "architecture" {
+  description = "Architecture type: faas, microservices, or monolith"
+  type        = string
+  default     = "faas"
+}
+
 data "terraform_remote_state" "exp" {
   backend = "local"
 
@@ -18,8 +24,15 @@ data "terraform_remote_state" "exp" {
   }
 }
 
+# Custom VPC for FaaS architecture (used with Redis) - may not exist for microservices/monolith
 data "terraform_remote_state" "vpc" {
   backend = "local"
+  defaults = {
+    default_subnet  = ""
+    security_groups = []
+    ssh_key_name    = ""
+    ssh_private_key = ""
+  }
 
   config = {
     path = "${path.module}/../vpc/terraform.tfstate"
@@ -28,20 +41,78 @@ data "terraform_remote_state" "vpc" {
 
 data "terraform_remote_state" "redis" {
   backend = "local"
+  defaults = {
+    REDIS_ENDPOINT = ""
+  }
 
   config = {
     path = "${path.module}/../redisAws/terraform.tfstate"
   }
 }
 
+# Default VPC for microservices/monolith (they use default VPC)
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
 locals {
-  project_name    = data.terraform_remote_state.exp.outputs.project_name
-  deployment_id   = data.terraform_remote_state.exp.outputs.deployment_id
-  default_subnet  = data.terraform_remote_state.vpc.outputs.default_subnet
-  ssh_key_name    = data.terraform_remote_state.vpc.outputs.ssh_key_name
-  security_groups = data.terraform_remote_state.vpc.outputs.security_groups
-  ssh_private_key = data.terraform_remote_state.vpc.outputs.ssh_private_key
-  redis_endpoint  = try(data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT, "")
+  project_name  = data.terraform_remote_state.exp.outputs.project_name
+  deployment_id = data.terraform_remote_state.exp.outputs.deployment_id
+
+  # For FaaS: use custom VPC from vpc terraform
+  # For microservices/monolith: use default VPC (same as the services)
+  use_default_vpc = var.architecture != "faas"
+
+  # Redis endpoint (only used for FaaS with Redis)
+  redis_endpoint = try(data.terraform_remote_state.redis.outputs.REDIS_ENDPOINT, "")
+}
+
+# Security group for workload in default VPC (used for microservices/monolith)
+resource "aws_security_group" "workload_default_vpc" {
+  count       = local.use_default_vpc ? 1 : 0
+  name        = "${local.project_name}-workload-sg"
+  description = "Security group for workload EC2 in default VPC"
+  vpc_id      = data.aws_vpc.default.id
+
+  # Allow all outbound traffic (needed to reach ALB and internet)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow SSH inbound (for Terraform provisioner)
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${local.project_name}-workload-sg"
+  }
+}
+
+# SSH key for default VPC workload (used for microservices/monolith)
+resource "tls_private_key" "workload" {
+  count     = local.use_default_vpc ? 1 : 0
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "aws_key_pair" "workload" {
+  count      = local.use_default_vpc ? 1 : 0
+  key_name   = "${local.project_name}-workload-key"
+  public_key = tls_private_key.workload[0].public_key_openssh
 }
 
 data "aws_ami" "ubuntu_lts" {
@@ -54,10 +125,13 @@ resource "aws_instance" "workload" {
   ami                                  = data.aws_ami.ubuntu_lts.id
   instance_type                        = "t3a.medium"
   associate_public_ip_address          = true
-  subnet_id                            = local.default_subnet
-  key_name                             = local.ssh_key_name
-  vpc_security_group_ids               = local.security_groups
   instance_initiated_shutdown_behavior = "terminate"
+
+  # For microservices/monolith: use default VPC (same VPC as the services)
+  # For FaaS: use custom VPC from vpc terraform
+  subnet_id              = local.use_default_vpc ? tolist(data.aws_subnets.default.ids)[0] : data.terraform_remote_state.vpc.outputs.default_subnet
+  key_name               = local.use_default_vpc ? aws_key_pair.workload[0].key_name : data.terraform_remote_state.vpc.outputs.ssh_key_name
+  vpc_security_group_ids = local.use_default_vpc ? [aws_security_group.workload_default_vpc[0].id] : data.terraform_remote_state.vpc.outputs.security_groups
 
   tags = {
     Name = "${local.project_name}-workload"
@@ -68,7 +142,7 @@ resource "aws_instance" "workload" {
       type        = "ssh"
       user        = "ubuntu"
       host        = self.public_ip
-      private_key = local.ssh_private_key
+      private_key = local.use_default_vpc ? tls_private_key.workload[0].private_key_pem : data.terraform_remote_state.vpc.outputs.ssh_private_key
       agent       = false
     }
     source      = "${path.module}/../../../artillery/image.tar.gz"
@@ -80,13 +154,13 @@ resource "aws_instance" "workload" {
       type        = "ssh"
       user        = "ubuntu"
       host        = self.public_ip
-      private_key = local.ssh_private_key
+      private_key = local.use_default_vpc ? tls_private_key.workload[0].private_key_pem : data.terraform_remote_state.vpc.outputs.ssh_private_key
       agent       = false
     }
 
     inline = [
       "sudo apt-get update",
-      "sudo apt-get install -y docker.io",
+      "for i in 1 2 3 4 5; do sudo apt-get install -y docker.io && break || sleep 10; done",
       "sudo systemctl start docker",
       "sudo systemctl enable docker",
       "sudo docker load -i /tmp/image.tar.gz",

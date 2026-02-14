@@ -4,12 +4,13 @@
  * Pre-register users in Redis before running Artillery benchmarks.
  * This script runs inside the Docker container on the workload EC2.
  *
- * Uses precomputed bcrypt hashes from users.csv for fast registration.
+ * Uses precomputed argon2id hashes from users.csv for fast registration.
  * Falls back to runtime hashing if passwordHash column is missing.
  *
  * Environment variables:
  *   REDIS_ENDPOINT - Redis connection URL (redis://default:password@host:port)
  *   AUTH_MODE - Authentication mode (none, service-integrated-manual)
+ *   ALGORITHM - Algorithm variant for service-integrated-manual (bcrypt-hs256, argon2id-eddsa; default: argon2id-eddsa)
  */
 
 const fs = require('fs');
@@ -17,7 +18,6 @@ const net = require('net');
 const crypto = require('crypto');
 
 const usersFile = '/workload/users.csv';
-const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS, 10) || 10;
 const BATCH_SIZE = 1000; // Larger batch size since no hashing needed
 
 /**
@@ -75,29 +75,36 @@ function parseUsersCSV() {
 }
 
 /**
- * Fallback: batch hash passwords using bcryptjs (only if CSV lacks hashes)
+ * Fallback: batch hash passwords at runtime (only if CSV lacks hashes)
  */
-async function hashPasswordsBatch(passwords) {
-  try {
+async function hashPasswordsBatch(passwords, algorithm) {
+  const hashes = [];
+
+  if (algorithm === 'bcrypt-hs256') {
     const bcrypt = require('bcryptjs');
-    const hashes = [];
     for (const password of passwords) {
-      const hash = await new Promise((resolve, reject) => {
-        bcrypt.hash(password, BCRYPT_ROUNDS, (err, hash) => {
-          if (err) reject(err);
-          else resolve(hash);
-        });
+      const hash = await bcrypt.hash(password, 10);
+      hashes.push(hash);
+    }
+  } else {
+    const { argon2id } = require('hash-wasm');
+    for (const password of passwords) {
+      const salt = new Uint8Array(16);
+      crypto.randomFillSync(salt);
+      const hash = await argon2id({
+        password,
+        salt,
+        parallelism: 1,
+        iterations: 3,
+        memorySize: 65536,
+        hashLength: 32,
+        outputType: 'encoded'
       });
       hashes.push(hash);
     }
-    return hashes;
-  } catch (e) {
-    // Fallback if bcryptjs not available
-    return passwords.map(password => {
-      const salt = `$2a$${BCRYPT_ROUNDS}$` + crypto.randomBytes(16).toString('base64').substring(0, 22);
-      return salt + crypto.createHash('sha256').update(password + salt).digest('base64').substring(0, 31);
-    });
   }
+
+  return hashes;
 }
 
 /**
@@ -263,7 +270,7 @@ class RedisClient {
 /**
  * Prepare user data for a batch of users
  */
-async function prepareBatch(users, authMode, hasPrecomputedHashes) {
+async function prepareBatch(users, authMode, hasPrecomputedHashes, algorithm) {
   const createdAt = new Date().toISOString();
 
   if (authMode === 'none') {
@@ -285,9 +292,9 @@ async function prepareBatch(users, authMode, hasPrecomputedHashes) {
     }
 
     // Fallback: compute hashes at runtime (slow)
-    console.log('  Warning: Computing hashes at runtime (CSV lacks passwordHash column)');
+    console.log(`  Warning: Computing hashes at runtime (CSV lacks passwordHash column, using ${algorithm || 'argon2id-eddsa'})`);
     const passwords = users.map(u => u.password);
-    const hashes = await hashPasswordsBatch(passwords);
+    const hashes = await hashPasswordsBatch(passwords, algorithm);
 
     return users.map((user, i) => ({
       key: `user:${user.userName}`,
@@ -308,6 +315,7 @@ async function prepareBatch(users, authMode, hasPrecomputedHashes) {
 async function main() {
   const redisEndpoint = process.env.REDIS_ENDPOINT;
   const authMode = process.env.AUTH_MODE || 'none';
+  const algorithm = process.env.ALGORITHM || 'argon2id-eddsa';
 
   if (!redisEndpoint) {
     console.log('REDIS_ENDPOINT not set, skipping preregistration');
@@ -318,6 +326,9 @@ async function main() {
   console.log('  Pre-registering Users in Redis');
   console.log('='.repeat(60));
   console.log(`Auth mode: ${authMode}`);
+  if (authMode === 'service-integrated-manual') {
+    console.log(`Algorithm: ${algorithm}`);
+  }
   console.log(`Batch size: ${BATCH_SIZE}`);
 
   // Parse users
@@ -356,7 +367,7 @@ async function main() {
     const batch = users.slice(start, end);
 
     try {
-      const keyValuePairs = await prepareBatch(batch, authMode, hasPrecomputedHashes);
+      const keyValuePairs = await prepareBatch(batch, authMode, hasPrecomputedHashes, algorithm);
       const results = await redis.mset(keyValuePairs);
 
       for (const result of results) {

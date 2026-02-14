@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const { createZip, installDependencies } = require('../experiments/webservice/architectures/shared/buildUtils');
+const { runTerraform, getTerraformOutputJson, getTerraformOutput } = require('./deploy-shared');
 
 /**
  * Deploy FaaS architecture using Terraform
@@ -105,17 +105,31 @@ async function deployFaaS(experiment, buildDir) {
         // Set environment variable for function env
         process.env.TF_VAR_fn_env = JSON.stringify(fnEnv);
 
+        // Set edge public key if available (for edge auth)
+        if (process.env.EDGE_PUBLIC_KEY) {
+          process.env.TF_VAR_edge_public_key = process.env.EDGE_PUBLIC_KEY;
+        }
+
+        // Set JWT signing keys if available (for service-integrated-manual auth)
+        if (process.env.JWT_PRIVATE_KEY) {
+          process.env.TF_VAR_jwt_private_key = process.env.JWT_PRIVATE_KEY;
+        }
+        if (process.env.JWT_PUBLIC_KEY) {
+          process.env.TF_VAR_jwt_public_key = process.env.JWT_PUBLIC_KEY;
+        }
+
         runTerraform(providerDir, 'init');
         runTerraform(providerDir, 'apply');
 
-        // Get provider endpoints
+        // Get provider endpoints for health checking
         const providerOutput = getTerraformOutputJson(providerDir);
         for (const [key, value] of Object.entries(providerOutput)) {
           if (key.includes('endpoint') || key.includes('url')) {
             const endpoint = value.value || value;
             // Only add valid HTTP/HTTPS URLs for health checking
+            // Append /frontend because API Gateway has no root route — only function-specific routes
             if (endpoint && (endpoint.startsWith('http://') || endpoint.startsWith('https://'))) {
-              endpoints.push(endpoint);
+              endpoints.push(`${endpoint}/frontend`);
             }
           }
         }
@@ -231,51 +245,6 @@ function extractEndpoints(states) {
     }
   }
   return endpoints;
-}
-
-function runTerraform(workingDir, command, options = {}) {
-  const { vars = {}, autoApprove = false } = options;
-
-  let cmd = `terraform ${command}`;
-
-  // Add variables
-  for (const [key, value] of Object.entries(vars)) {
-    cmd += ` -var="${key}=${value}"`;
-  }
-
-  // Add auto-approve for apply/destroy
-  if (command === 'apply' || command === 'destroy') {
-    cmd += ' -auto-approve';
-  }
-
-  console.log(`  → ${cmd}`);
-  execSync(cmd, {
-    cwd: workingDir,
-    stdio: 'inherit'
-  });
-}
-
-function getTerraformOutput(workingDir, outputName) {
-  const cmd = `terraform output -raw ${outputName}`;
-  const result = execSync(cmd, {
-    cwd: workingDir,
-    encoding: 'utf8'
-  });
-  return result.trim();
-}
-
-function getTerraformOutputJson(workingDir) {
-  try {
-    const cmd = 'terraform output -json';
-    const result = execSync(cmd, {
-      cwd: workingDir,
-      encoding: 'utf8'
-    });
-    return JSON.parse(result);
-  } catch (error) {
-    console.warn(`Warning: Could not get Terraform output from ${workingDir}`);
-    return {};
-  }
 }
 
 /**

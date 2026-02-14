@@ -23,3 +23,15 @@ terraform-provider-*
 analysis/
 .suppress_notice
 /.idea
+experiments/webservice/authentication/edge/edge-lambda/dist/
+
+# OS artifacts
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+scripts/.env

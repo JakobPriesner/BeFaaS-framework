@@ -47,6 +47,12 @@ variable "target_cpu_utilization" {
   default     = 70
 }
 
+variable "target_request_count" {
+  description = "Target ALB requests per target per minute for auto-scaling"
+  type        = number
+  default     = 2500
+}
+
 variable "scale_out_cooldown" {
   description = "Scale-out cooldown period in seconds (Fast Response)"
   type        = number
@@ -57,4 +63,23 @@ variable "scale_in_cooldown" {
   description = "Scale-in cooldown period in seconds (Slow Shrinkage) - Monolith: 300s"
   type        = number
   default     = 300
+}
+
+variable "edge_public_key" {
+  description = "Ed25519 public key for edge authentication (base64 encoded)"
+  type        = string
+  default     = ""
+}
+
+variable "jwt_private_key" {
+  description = "Ed25519 private key for JWT signing (base64-encoded PEM)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "jwt_public_key" {
+  description = "Ed25519 public key for JWT verification (base64-encoded PEM)"
+  type        = string
+  default     = ""
 }

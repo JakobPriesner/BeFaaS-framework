@@ -16,8 +16,12 @@ const _ = require('lodash')
 const fs = require('fs')
 const path = require('path')
 
-// Session storage object (per-request, loaded from cookies)
-let storageObj = {}
+// Helper to get per-request storage from context (prevents race conditions)
+function getStorageObj(ctx) {
+  if (!ctx.state) ctx.state = {}
+  if (!ctx.state.storageObj) ctx.state.storageObj = {}
+  return ctx.state.storageObj
+}
 
 // Load templates - path resolution works for both FaaS and monolith builds
 function loadTemplates (basePath) {
@@ -73,16 +77,21 @@ function initTemplates(basePath) {
 
 // Cookie helpers
 function getCookies(ctx) {
+  const storageObj = getStorageObj(ctx)
   const newMockedCookies = ctx.cookies.get('storageObj')
-  if (newMockedCookies) storageObj = JSON.parse(newMockedCookies)
+  if (newMockedCookies) {
+    Object.assign(storageObj, JSON.parse(newMockedCookies))
+  }
 }
 
 function storeCookies(ctx) {
+  const storageObj = getStorageObj(ctx)
   ctx.cookies.set('storageObj', JSON.stringify(storageObj), { overwrite: true, sameSite: true })
 }
 
 // Session helpers
 function getSessionID(ctx) {
+  const storageObj = getStorageObj(ctx)
   if (!storageObj.sessionId) {
     storageObj.sessionId = lib.helper.generateRandomID()
   }
@@ -90,26 +99,32 @@ function getSessionID(ctx) {
 }
 
 function getUserCurrency(ctx) {
+  const storageObj = getStorageObj(ctx)
   return storageObj.userCurrency || 'EUR'
 }
 
 function getUserName(ctx) {
+  const storageObj = getStorageObj(ctx)
   return storageObj.userName || ''
 }
 
 function getCartSize(ctx) {
+  const storageObj = getStorageObj(ctx)
   return _.parseInt(storageObj.cartSize) || 0
 }
 
 function increaseCartSize(ctx, inc) {
+  const storageObj = getStorageObj(ctx)
   storageObj.cartSize = getCartSize(ctx) + inc
 }
 
 function emptyCartSize(ctx) {
+  const storageObj = getStorageObj(ctx)
   storageObj.cartSize = 0
 }
 
-function getJWTToken() {
+function getJWTToken(ctx) {
+  const storageObj = getStorageObj(ctx)
   return storageObj.jwtToken || ''
 }
 
@@ -154,14 +169,22 @@ function printPrice(price) {
   )
 }
 
-// Auth setup - enriches ctx.call with auth header if JWT token exists
+// Auth setup - enriches ctx.call with auth header for downstream function calls
+// For edge auth: uses the internal EdDSA token from Lambda@Edge (in incoming request header)
+// For other auth modes: uses the original token from the incoming request, falling back to cookie
 function setupAuth(ctx) {
   getCookies(ctx)
-  const jwtToken = getJWTToken()
-  if (jwtToken) {
+  const incomingAuth = ctx.request?.headers?.authorization
+  const token = incomingAuth
+    ? incomingAuth.replace(/^Bearer\s+/i, '')
+    : getJWTToken(ctx)
+  if (token) {
     const originalCall = ctx.call.bind(ctx)
     ctx.call = async (fn, payload) => {
-      const enrichedPayload = { ...payload, _authHeader: `Bearer ${jwtToken}` }
+      const enrichedPayload = {
+        ...payload,
+        headers: { authorization: `Bearer ${token}` }
+      }
       return await originalCall(fn, enrichedPayload)
     }
   }
@@ -196,8 +219,8 @@ async function handleHome(ctx) {
     ads: cats.ads
   }
   ctx.type = 'text/html'
-  ctx.body = getTemplates().home(options)
   storeCookies(ctx)
+  ctx.body = getTemplates().home(options)
 }
 
 async function handleProduct(ctx) {
@@ -238,15 +261,29 @@ async function handleProduct(ctx) {
     ad: cat.ads[0]
   }
   ctx.type = 'text/html'
-  ctx.body = getTemplates().product(options)
   storeCookies(ctx)
+  ctx.body = getTemplates().product(options)
 }
 
 async function handleCart(ctx) {
   setupAuth(ctx)
   const requestId = lib.helper.generateRandomID()
 
-  const cart = (await ctx.call('getcart', { userId: getUserName(ctx) })).items || []
+  const cartResult = await ctx.call('getcart', { userId: getUserName(ctx) })
+
+  // Handle getcart errors (auth timeout, unauthorized, etc.)
+  if (cartResult?.error) {
+    if (cartResult.error === 'AuthTimeout') {
+      ctx.status = 424
+      ctx.body = { error: 'Get cart failed', message: 'Authentication service timeout' }
+      return
+    }
+    ctx.status = cartResult.statusCode || 400
+    ctx.body = { error: cartResult.error }
+    return
+  }
+
+  const cart = cartResult.items || []
 
   const products = await Promise.all(
     cart.map(async i =>
@@ -295,8 +332,8 @@ async function handleCart(ctx) {
   }
 
   ctx.type = 'text/html'
-  ctx.body = getTemplates().cart(options)
   storeCookies(ctx)
+  ctx.body = getTemplates().cart(options)
 }
 
 async function handleCheckout(ctx) {
@@ -327,6 +364,20 @@ async function handleCheckout(ctx) {
     })
   ])
 
+  // Handle checkout failure
+  if (!checkoutResult || !checkoutResult.order) {
+    // Check for auth timeout (Cognito JWKS fetch timeout)
+    if (checkoutResult?.error === 'AuthTimeout') {
+      ctx.status = 424 // Failed Dependency
+      ctx.body = { error: 'Checkout failed', message: 'Authentication service timeout' }
+      return
+    }
+    // Other errors (e.g., Unauthorized, cart is empty)
+    ctx.status = checkoutResult?.statusCode || 400
+    ctx.body = { error: checkoutResult?.error || 'Checkout failed' }
+    return
+  }
+
   const options = {
     session_id: getSessionID(ctx),
     request_id: requestId,
@@ -341,8 +392,8 @@ async function handleCheckout(ctx) {
   }
 
   ctx.type = 'text/html'
-  ctx.body = getTemplates().order(options)
   storeCookies(ctx)
+  ctx.body = getTemplates().order(options)
 }
 
 async function handleSetUser(ctx) {
@@ -352,15 +403,35 @@ async function handleSetUser(ctx) {
 
   const authResult = await ctx.call('login', { userName, password })
 
+  // Check if client wants JSON response (for API/Artillery clients)
+  const acceptHeader = ctx.request.headers.accept || ''
+  const wantsJson = acceptHeader.includes('application/json')
+
+  // Handle authentication failure
+  if (!authResult.accessToken || authResult.success === false) {
+    console.error(`Authentication failed for user ${userName}: ${authResult.error || 'No token returned'}`)
+    ctx.status = 401
+    ctx.type = 'application/json'
+    if (wantsJson) {
+      ctx.body = {
+        success: false,
+        error: authResult.error || 'Authentication failed',
+        userName
+      }
+    } else {
+      // Browser clients: redirect back with error (could add query param for error display)
+      ctx.response.redirect('back')
+    }
+    return
+  }
+
+  // Success path
+  const storageObj = getStorageObj(ctx)
   emptyCartSize(ctx)
   storageObj.userName = userName
   storageObj.userPassword = password || ''
   storageObj.jwtToken = authResult.accessToken
   console.log(`User ${userName} authenticated successfully`)
-
-  // Check if client wants JSON response (for API/Artillery clients)
-  const acceptHeader = ctx.request.headers.accept || ''
-  const wantsJson = acceptHeader.includes('application/json')
 
   ctx.type = 'application/json'
   storeCookies(ctx)
@@ -368,6 +439,7 @@ async function handleSetUser(ctx) {
   if (wantsJson) {
     // API clients: return JSON with token (status 200)
     ctx.body = {
+      success: true,
       accessToken: authResult.accessToken,
       userName
     }
@@ -379,6 +451,7 @@ async function handleSetUser(ctx) {
 
 async function handleRegister(ctx) {
   getCookies(ctx)
+  const storageObj = getStorageObj(ctx)
   const userName = ctx.request.body.userName
   const password = ctx.request.body.password
 
@@ -413,38 +486,41 @@ async function handleRegister(ctx) {
   }
 
   ctx.type = 'application/json'
-  ctx.response.redirect('back')
   storeCookies(ctx)
+  ctx.response.redirect('back')
 }
 
 async function handleLogout(ctx) {
   getCookies(ctx)
+  const storageObj = getStorageObj(ctx)
   emptyCartSize(ctx)
   storageObj.userName = ''
   storageObj.userPassword = ''
   storageObj.jwtToken = ''
   ctx.type = 'application/json'
-  ctx.response.redirect('back')
   storeCookies(ctx)
+  ctx.response.redirect('back')
 }
 
 async function handleLogoutAndLeave(ctx) {
   getCookies(ctx)
+  const storageObj = getStorageObj(ctx)
   storageObj.userName = ''
   storageObj.userPassword = ''
   storageObj.jwtToken = ''
   emptyCartSize(ctx)
   ctx.type = 'application/json'
-  ctx.response.redirect('./')
   storeCookies(ctx)
+  ctx.response.redirect('./')
 }
 
 async function handleSetCurrency(ctx) {
   getCookies(ctx)
+  const storageObj = getStorageObj(ctx)
   storageObj.userCurrency = ctx.request.body.currencyCode
   ctx.type = 'application/json'
-  ctx.response.redirect('back')
   storeCookies(ctx)
+  ctx.response.redirect('back')
 }
 
 async function handleEmptyCart(ctx) {
@@ -453,8 +529,8 @@ async function handleEmptyCart(ctx) {
   await ctx.call('emptycart', { userId: userId })
   emptyCartSize(ctx)
   ctx.type = 'application/json'
-  ctx.response.redirect('back')
   storeCookies(ctx)
+  ctx.response.redirect('back')
 }
 
 async function handleAddCartItem(ctx) {
@@ -463,19 +539,49 @@ async function handleAddCartItem(ctx) {
   const productId = ctx.request.body.productId
   const quantity = _.parseInt(ctx.request.body.quantity)
 
+  // Check if client wants JSON response (for API/Artillery clients)
+  const acceptHeader = ctx.request.headers.accept || ''
+  const wantsJson = acceptHeader.includes('application/json')
+
   if (userName) {
-    await ctx.call('addcartitem', {
+    const result = await ctx.call('addcartitem', {
       userId: userName,
       item: {
         productId: productId,
         quantity: quantity
       }
     })
+
+    // Handle addcartitem errors (auth timeout, unauthorized, etc.)
+    if (result?.error) {
+      if (result.error === 'AuthTimeout') {
+        ctx.status = 424
+        ctx.body = { error: 'Add to cart failed', message: 'Authentication service timeout' }
+        return
+      }
+      ctx.status = result.statusCode || 400
+      ctx.body = { error: result.error }
+      return
+    }
+
     increaseCartSize(ctx, quantity)
   }
+
   ctx.type = 'application/json'
-  ctx.response.redirect('back')
   storeCookies(ctx)
+
+  if (wantsJson) {
+    // API clients: return JSON (status 200)
+    ctx.body = {
+      success: true,
+      productId,
+      quantity,
+      cartSize: getCartSize(ctx)
+    }
+  } else {
+    // Browser clients: redirect back (status 302)
+    ctx.response.redirect('back')
+  }
 }
 
 module.exports = {

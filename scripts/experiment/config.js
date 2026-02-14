@@ -7,12 +7,15 @@ Usage: node scripts/experiment.js --architecture <arch> --auth <auth> [options]
 
 Required:
   --architecture, -a    Architecture to deploy (faas, microservices, monolith)
-  --auth, -u           Authentication strategy (none, service-integrated, service-integrated-manual)
+  --auth, -u           Authentication strategy (none, service-integrated, service-integrated-manual, edge)
 
 Optional:
   --experiment, -e     Experiment to run (default: webservice)
                        Available: iot, smartFactory, streaming, test, topics, webservice
-  --memory             AWS Lambda memory in MB (default: 512, range: 128-10240)
+  --memory             AWS Lambda memory in MB (FaaS only, default: 512, range: 128-10240)
+  --cpu                Fargate CPU units (Monolith/Microservices only, default: 512)
+                       256 = 0.25 vCPU, 512 = 0.5 vCPU, 1024 = 1.0 vCPU
+  --memory-fargate     Fargate memory in MB (Monolith/Microservices only, default: 1024)
   --keep-infra         Keep infrastructure running after experiment (default: destroy)
   --skip-benchmark     Skip benchmark execution
   --skip-metrics       Skip metrics collection
@@ -20,8 +23,10 @@ Optional:
   --bundle-mode        FaaS only: 'all' (all functions) or 'minimal' (only needed) (default: minimal)
   --output-dir         Output directory for results (default: ./results/<experiment>/<arch>_<auth>_<mem>_<bundle>_<timestamp>)
   --scaling            Run scaling benchmark after baseline (tests system under increasing load)
-  --stress-auth        Run stress-auth benchmark (tests auth endpoints under load)
   --scale-down-wait    Seconds to wait between benchmark phases for scale-down (default: 300)
+  --algorithm           Algorithm variant for service-integrated-manual auth
+                       (bcrypt-hs256, argon2id-eddsa; default: argon2id-eddsa)
+  --cleanup-logs       Clean up ALL orphaned CloudWatch log groups and exit (no experiment run)
   --help, -h           Show this help message
 
 Examples:
@@ -31,14 +36,18 @@ Examples:
   # Run with scaling test (baseline + scaling)
   node scripts/experiment.js -a faas -u service-integrated --scaling
 
-  # Run with stress-auth test (baseline + stress-auth)
-  node scripts/experiment.js -a faas -u service-integrated --stress-auth
+  # Lambda with custom memory (SMALL/MEDIUM/LARGE)
+  node scripts/experiment.js -a faas -u none --memory 256
+  node scripts/experiment.js -a faas -u none --memory 512
+  node scripts/experiment.js -a faas -u none --memory 1769
 
-  # Run with both (baseline + scaling + stress-auth)
-  node scripts/experiment.js -a faas -u service-integrated --scaling --stress-auth
+  # Monolith with custom CPU/Memory (SMALL/MEDIUM/LARGE)
+  node scripts/experiment.js -a monolith -u service-integrated --cpu 256 --memory-fargate 512
+  node scripts/experiment.js -a monolith -u service-integrated --cpu 512 --memory-fargate 1024
+  node scripts/experiment.js -a monolith -u service-integrated --cpu 1024 --memory-fargate 2048
 
-  # Run with custom Lambda memory configuration
-  node scripts/experiment.js -a faas -u none --memory 1024
+  # Microservices with custom CPU/Memory
+  node scripts/experiment.js -a microservices -u service-integrated --cpu 1024 --memory-fargate 2048
 
   # Keep infrastructure running after experiment (for debugging)
   node scripts/experiment.js -a faas -u none --keep-infra
@@ -55,11 +64,14 @@ function parseArgs(args) {
     skipMetrics: false,
     workload: 'workload-constant.yml',
     outputDir: null,
-    memory: 512,
+    memory: 512,          // Lambda memory (FaaS only)
+    cpu: 512,             // Fargate CPU units (Monolith/Microservices)
+    memoryFargate: 1024,  // Fargate memory (Monolith/Microservices)
     bundleMode: 'minimal',
     scaling: false,
-    stressAuth: false,
-    scaleDownWait: 300 // seconds to wait between benchmark phases for scale-down
+    scaleDownWait: 300, // seconds to wait between benchmark phases for scale-down
+    cleanupLogs: false,  // cleanup orphaned CloudWatch log groups and exit
+    algorithm: null      // algorithm variant for service-integrated-manual auth
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -104,17 +116,26 @@ function parseArgs(args) {
       case '--memory':
         config.memory = parseInt(args[++i]);
         break;
+      case '--cpu':
+        config.cpu = parseInt(args[++i]);
+        break;
+      case '--memory-fargate':
+        config.memoryFargate = parseInt(args[++i]);
+        break;
       case '--bundle-mode':
         config.bundleMode = args[++i];
         break;
       case '--scaling':
         config.scaling = true;
         break;
-      case '--stress-auth':
-        config.stressAuth = true;
-        break;
       case '--scale-down-wait':
         config.scaleDownWait = parseInt(args[++i]);
+        break;
+      case '--algorithm':
+        config.algorithm = args[++i];
+        break;
+      case '--cleanup-logs':
+        config.cleanupLogs = true;
         break;
       default:
         console.error(`Unknown argument: ${arg}`);
@@ -127,6 +148,11 @@ function parseArgs(args) {
 }
 
 function validateConfig(config) {
+  // If cleanup-logs mode, skip other validations
+  if (config.cleanupLogs) {
+    return config;
+  }
+
   // Validate required arguments
   if (!config.architecture) {
     console.error('Error: --architecture is required');
@@ -148,10 +174,37 @@ function validateConfig(config) {
   }
 
   // Validate auth
-  const validAuth = ['none', 'service-integrated', 'service-integrated-manual'];
+  const validAuth = ['none', 'service-integrated', 'service-integrated-manual', 'edge'];
   if (!validAuth.includes(config.auth)) {
     console.error(`Error: Invalid auth strategy. Must be one of: ${validAuth.join(', ')}`);
     process.exit(1);
+  }
+
+  // Validate algorithm
+  if (config.algorithm && config.auth !== 'service-integrated-manual') {
+    console.error(`Error: --algorithm can only be used with --auth service-integrated-manual`);
+    process.exit(1);
+  }
+
+  // Default algorithm for service-integrated-manual auth
+  if (config.auth === 'service-integrated-manual' && !config.algorithm) {
+    config.algorithm = 'argon2id-eddsa';
+  }
+
+  // Validate algorithm directory exists
+  if (config.algorithm) {
+    const algorithmDir = path.join(__dirname, '..', '..', 'experiments', 'webservice', 'authentication', 'service-integrated-manual', 'algorithms', config.algorithm);
+    if (!fs.existsSync(algorithmDir)) {
+      console.error(`Error: Algorithm variant '${config.algorithm}' not found at ${algorithmDir}`);
+      const algorithmsBase = path.join(__dirname, '..', '..', 'experiments', 'webservice', 'authentication', 'service-integrated-manual', 'algorithms');
+      if (fs.existsSync(algorithmsBase)) {
+        const available = fs.readdirSync(algorithmsBase).filter(f => {
+          return fs.statSync(path.join(algorithmsBase, f)).isDirectory();
+        });
+        console.error(`Available algorithms: ${available.join(', ')}`);
+      }
+      process.exit(1);
+    }
   }
 
   // Validate experiment exists
@@ -185,12 +238,21 @@ function validateConfig(config) {
   }
 
   // Set default output directory and run_id
-  // Format: <architecture>_<auth>_<memory>_<bundle (faas only)>_<timestamp>
+  // Format varies by architecture:
+  //   FaaS: <architecture>_<auth>_<memory>MB_<bundle>_<timestamp>
+  //   Monolith/Microservices: <architecture>_<auth>_<cpu>cpu_<memory>MB_<timestamp>
   // Note: Using underscore as separator since # is not allowed in CloudWatch log group names
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const parts = [config.architecture, config.auth, `${config.memory}MB`];
+  const parts = [config.architecture, config.auth];
+
   if (config.architecture === 'faas') {
+    // FaaS: Lambda memory + bundle mode
+    parts.push(`${config.memory}MB`);
     parts.push(config.bundleMode);
+  } else {
+    // Monolith/Microservices: Fargate CPU + memory
+    parts.push(`${config.cpu}cpu`);
+    parts.push(`${config.memoryFargate}MB`);
   }
   parts.push(timestamp);
 

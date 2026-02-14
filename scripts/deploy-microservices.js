@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const { runTerraform, getTerraformOutputJson, hasState, getAwsAccountId, getVpcIdFromState, waitForInstancesTerminated, cleanupVpcNetworkInterfaces } = require('./deploy-shared');
 
 // Service definitions matching Terraform
 const SERVICES = [
@@ -124,11 +125,23 @@ async function deployMicroservices(experiment, buildDir) {
 
     // Step 6: Deploy full infrastructure with the new images
     console.log('\nStep 6: Deploying ECS services...');
+    const ecsVars = {
+      aws_region: awsRegion,
+      image_tag: imageTag
+    };
+    // Add edge public key if available (for edge auth)
+    if (process.env.EDGE_PUBLIC_KEY) {
+      ecsVars.edge_public_key = process.env.EDGE_PUBLIC_KEY;
+    }
+    // Add JWT signing keys if available (for service-integrated-manual auth)
+    if (process.env.JWT_PRIVATE_KEY) {
+      ecsVars.jwt_private_key = process.env.JWT_PRIVATE_KEY;
+    }
+    if (process.env.JWT_PUBLIC_KEY) {
+      ecsVars.jwt_public_key = process.env.JWT_PUBLIC_KEY;
+    }
     runTerraform(microservicesDir, 'apply', {
-      vars: {
-        aws_region: awsRegion,
-        image_tag: imageTag
-      }
+      vars: ecsVars
     });
 
     const output = getTerraformOutputJson(microservicesDir);
@@ -217,90 +230,24 @@ async function destroyMicroservices(experiment) {
     runTerraform(redisDir, 'destroy');
   }
 
+  // Get VPC ID before destroying VPC (needed for cleanup checks)
   const vpcDir = path.join(projectRoot, 'infrastructure', 'services', 'vpc');
+  const vpcId = getVpcIdFromState(vpcDir);
+
+  // Wait for any EC2 instances in the VPC to be fully terminated before destroying VPC
+  // This prevents "DependencyViolation" errors when destroying subnets/security groups
+  if (vpcId) {
+    await waitForInstancesTerminated(vpcId, awsRegion, 300);
+    // Also cleanup any remaining ENIs that might block VPC deletion
+    await cleanupVpcNetworkInterfaces(vpcId, awsRegion);
+  }
+
   if (fs.existsSync(vpcDir) && hasState(vpcDir)) {
     console.log('Destroying VPC...');
     runTerraform(vpcDir, 'destroy');
   }
 
   console.log('✓ Microservices infrastructure destroyed');
-}
-
-// Helper functions
-
-function runTerraform(workingDir, command, options = {}) {
-  const { vars = {}, targets = [], target = null } = options;
-
-  let cmd = `terraform ${command}`;
-
-  // Add target if specified (single target)
-  if (target) {
-    cmd += ` -target=${target}`;
-  }
-
-  // Add targets if specified (multiple targets)
-  // Use single quotes around targets to preserve inner double quotes for map keys
-  if (targets.length > 0) {
-    targets.forEach(t => {
-      cmd += ` -target='${t}'`;
-    });
-  }
-
-  // Add variables
-  for (const [key, value] of Object.entries(vars)) {
-    cmd += ` -var="${key}=${value}"`;
-  }
-
-  // Add auto-approve for apply/destroy
-  if (command === 'apply' || command === 'destroy') {
-    cmd += ' -auto-approve';
-  }
-
-  console.log(`  → ${cmd}`);
-  execSync(cmd, {
-    cwd: workingDir,
-    stdio: 'inherit'
-  });
-}
-
-function getTerraformOutputJson(workingDir) {
-  try {
-    const cmd = 'terraform output -json';
-    const result = execSync(cmd, {
-      cwd: workingDir,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    return JSON.parse(result);
-  } catch (error) {
-    console.warn(`Warning: Could not get Terraform output from ${workingDir}`);
-    return {};
-  }
-}
-
-function hasState(workingDir) {
-  const stateFile = path.join(workingDir, 'terraform.tfstate');
-  if (!fs.existsSync(stateFile)) {
-    return false;
-  }
-  try {
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    return state.resources && state.resources.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-function getAwsAccountId() {
-  try {
-    const result = execSync('aws sts get-caller-identity --query Account --output text', {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    return result.trim();
-  } catch (error) {
-    throw new Error('Could not get AWS account ID. Ensure AWS CLI is configured.');
-  }
 }
 
 module.exports = { deployMicroservices, destroyMicroservices };

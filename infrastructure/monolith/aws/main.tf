@@ -342,7 +342,7 @@ resource "aws_ecs_task_definition" "monolith" {
         }
       ]
 
-      environment = [
+      environment = concat([
         {
           name  = "PORT"
           value = "3000"
@@ -367,7 +367,24 @@ resource "aws_ecs_task_definition" "monolith" {
           name  = "COGNITO_CLIENT_ID"
           value = local.cognito_client_id
         }
-      ]
+      ], var.edge_public_key != "" ? [
+        {
+          name  = "EDGE_PUBLIC_KEY"
+          value = var.edge_public_key
+        }
+      ] : [],
+      var.jwt_private_key != "" ? [
+        {
+          name  = "JWT_PRIVATE_KEY"
+          value = var.jwt_private_key
+        }
+      ] : [],
+      var.jwt_public_key != "" ? [
+        {
+          name  = "JWT_PUBLIC_KEY"
+          value = var.jwt_public_key
+        }
+      ] : [])
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -461,5 +478,27 @@ resource "aws_appautoscaling_policy" "monolith_cpu" {
     # Scale-in cooldown: 300s (Slow Shrinkage)
     # Verhältnis T_in/T_out = 300/60 = 5.0 (exceeds minimum of 3.0)
     scale_in_cooldown = var.scale_in_cooldown
+  }
+}
+
+# Auto-Scaling Policy - Target Tracking on ALB Request Count
+resource "aws_appautoscaling_policy" "monolith_requests" {
+  name               = "${local.project_name}-monolith-request-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.monolith.resource_id
+  scalable_dimension = aws_appautoscaling_target.monolith.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.monolith.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = "${aws_lb.monolith.arn_suffix}/${aws_lb_target_group.monolith.arn_suffix}"
+    }
+
+    target_value = var.target_request_count
+
+    # Use same cooldown settings as CPU scaling for consistency
+    scale_out_cooldown = var.scale_out_cooldown
+    scale_in_cooldown  = var.scale_in_cooldown
   }
 }

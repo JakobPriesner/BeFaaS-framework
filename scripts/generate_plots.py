@@ -15,7 +15,6 @@ The plotting functionality is now organized in the `plotting/` package:
 - plotting/generate_pricing_plots.py     - Cloud pricing analysis
 - plotting/generate_callgraph_plots.py   - Function call graph visualization
 - plotting/generate_stress_ramp_plot.py  - Stress test ramp/scaling plots
-- plotting/generate_stress_auth_plot.py  - Stress test auth-specific plots
 - plotting/main.py                       - Main CLI entry point
 
 Usage:
@@ -29,7 +28,6 @@ Options:
     --pricing       Generate pricing analysis plots
     --callgraph     Generate function call graph plots
     --stress-ramp   Generate stress test ramp/scaling plots
-    --stress-auth   Generate stress test auth-specific plots
     --all           Generate all plots (default)
     --exclude-warmup    Exclude warmup period from pure performance plots (default)
     --include-warmup    Include warmup period in all plots
@@ -81,10 +79,5 @@ from plotting.generate_stress_ramp_plot import (
     plot_stress_scaling_timeline,
     generate_stress_ramp_plots
 )
-from plotting.generate_stress_auth_plot import (
-    plot_stress_auth_response_vs_load,
-    generate_stress_auth_plots
-)
-
 if __name__ == '__main__':
     main()
