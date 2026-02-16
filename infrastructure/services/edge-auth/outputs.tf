@@ -35,3 +35,8 @@ output "ssm_public_key_name" {
   description = "SSM parameter name for the public key"
   value       = aws_ssm_parameter.edge_public_key.name
 }
+
+output "project_name" {
+  description = "Project name used for resource naming (needed for edge-auth reuse)"
+  value       = var.project_name
+}

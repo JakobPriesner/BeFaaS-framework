@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const crypto = require('crypto');
-const { runTerraform, getTerraformOutputJson } = require('./deploy-shared');
+const { runTerraform, getTerraformOutputJson, hasState } = require('./deploy-shared');
 
 /**
  * Generate Ed25519 key pair for token signing
@@ -235,14 +235,17 @@ async function deployEdgeAuth(projectName, originDomain, options = {}) {
   }, null, 2));
 
   // Run Terraform
-  runTerraform(edgeAuthDir, 'init');
-  runTerraform(edgeAuthDir, 'apply');
+  let output;
+  try {
+    runTerraform(edgeAuthDir, 'init');
+    runTerraform(edgeAuthDir, 'apply');
 
-  // Get outputs
-  const output = getTerraformOutputJson(edgeAuthDir);
-
-  // Clean up tfvars file (contains sensitive data)
-  fs.unlinkSync(tfvarsPath);
+    // Get outputs
+    output = getTerraformOutputJson(edgeAuthDir);
+  } finally {
+    // Clean up tfvars file (contains sensitive data) even if deploy fails
+    if (fs.existsSync(tfvarsPath)) fs.unlinkSync(tfvarsPath);
+  }
 
   const cloudfrontDomain = output.cloudfront_domain?.value;
   const cloudfrontUrl = output.cloudfront_url?.value || `https://${cloudfrontDomain}`;
@@ -313,9 +316,182 @@ async function destroyEdgeAuth(projectName) {
   }
 }
 
+/**
+ * Check if edge-auth Terraform state exists with resources
+ * @returns {boolean}
+ */
+function hasEdgeAuthState() {
+  const projectRoot = path.join(__dirname, '..');
+  const edgeAuthDir = path.join(projectRoot, 'infrastructure', 'services', 'edge-auth');
+  return hasState(edgeAuthDir);
+}
+
+/**
+ * Read edge-auth Terraform outputs
+ * @returns {Object|null} Object with project_name, EDGE_PUBLIC_KEY, cloudfront_distribution_id, cloudfront_url — or null if incomplete
+ */
+function getEdgeAuthState() {
+  const projectRoot = path.join(__dirname, '..');
+  const edgeAuthDir = path.join(projectRoot, 'infrastructure', 'services', 'edge-auth');
+
+  try {
+    const output = getTerraformOutputJson(edgeAuthDir);
+
+    const projectName = output.project_name?.value;
+    const publicKey = output.EDGE_PUBLIC_KEY?.value;
+    const distributionId = output.cloudfront_distribution_id?.value;
+    const cloudfrontUrl = output.cloudfront_url?.value;
+
+    if (!projectName || !publicKey || !distributionId || !cloudfrontUrl) {
+      return null;
+    }
+
+    return { projectName, publicKey, distributionId, cloudfrontUrl };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * In-place update of existing edge-auth infrastructure (new origin, new Lambda code)
+ *
+ * @param {string} originDomain - New origin domain
+ * @param {Object} options - Update options
+ * @returns {Promise<Object>} Updated deployment results
+ */
+async function updateEdgeAuth(originDomain, options = {}) {
+  const projectRoot = path.join(__dirname, '..');
+  const edgeAuthDir = path.join(projectRoot, 'infrastructure', 'services', 'edge-auth');
+
+  const {
+    originProtocol = 'https-only',
+    originHttpPort = 80,
+    originHttpsPort = 443
+  } = options;
+
+  console.log('\n========================================');
+  console.log('Updating Edge Authentication (in-place)');
+  console.log('========================================\n');
+
+  // Step 1: Read existing project_name + public key from edge-auth Terraform outputs
+  console.log('Step 1: Reading existing edge-auth state...');
+  const existingState = getEdgeAuthState();
+  if (!existingState) {
+    throw new Error('Cannot read existing edge-auth state for in-place update');
+  }
+
+  const { projectName, publicKey } = existingState;
+  console.log(`  Project name: ${projectName}`);
+  console.log(`  Distribution ID: ${existingState.distributionId}`);
+
+  // Step 2: Read private key from SSM
+  console.log('\nStep 2: Reading private key from SSM...');
+  let privateKey;
+  try {
+    privateKey = execSync(
+      `aws ssm get-parameter --name /${projectName}/edge-auth/private-key --with-decryption --query Parameter.Value --output text --region us-east-1`,
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+  } catch (error) {
+    throw new Error(`Could not read private key from SSM: ${error.message}`);
+  }
+  console.log('  Private key retrieved from SSM');
+
+  // Step 3: Get Cognito config from cognito Terraform state
+  console.log('\nStep 3: Getting Cognito configuration...');
+  const cognitoDir = path.join(projectRoot, 'infrastructure', 'services', 'cognito');
+  const cognitoOutput = getTerraformOutputJson(cognitoDir);
+  const cognitoPoolId = cognitoOutput.cognito_user_pool_id?.value || cognitoOutput.COGNITO_USER_POOL_ID?.value;
+  const cognitoClientId = cognitoOutput.cognito_client_id?.value || cognitoOutput.COGNITO_CLIENT_ID?.value;
+  const awsRegion = process.env.AWS_REGION || 'us-east-1';
+
+  if (!cognitoPoolId || !cognitoClientId) {
+    throw new Error('Could not get Cognito configuration from Terraform state');
+  }
+  console.log(`  Cognito Pool ID: ${cognitoPoolId}`);
+  console.log(`  Cognito Client ID: ${cognitoClientId}`);
+
+  // Step 4: Build new Lambda@Edge zip with existing keys + fresh Cognito JWKS
+  console.log('\nStep 4: Building Lambda@Edge function...');
+  const lambdaZipPath = await buildEdgeLambda(
+    projectRoot,
+    cognitoPoolId,
+    awsRegion,
+    privateKey,
+    cognitoClientId
+  );
+
+  // Step 5: Write terraform.auto.tfvars.json with same project_name + new origin
+  console.log('\nStep 5: Applying Terraform changes...');
+  const cloudfrontSecret = crypto.randomBytes(32).toString('hex');
+  const tfvarsPath = path.join(edgeAuthDir, 'terraform.auto.tfvars.json');
+  fs.writeFileSync(tfvarsPath, JSON.stringify({
+    project_name: projectName,
+    origin_domain: originDomain,
+    origin_protocol_policy: originProtocol,
+    origin_http_port: originHttpPort,
+    origin_https_port: originHttpsPort,
+    edge_lambda_zip_path: lambdaZipPath,
+    ed25519_public_key: publicKey,
+    ed25519_private_key: privateKey,
+    cloudfront_secret: cloudfrontSecret,
+    aws_region: awsRegion
+  }, null, 2));
+
+  // Step 6: Run terraform init + apply (in-place update)
+  let output;
+  try {
+    runTerraform(edgeAuthDir, 'init');
+    runTerraform(edgeAuthDir, 'apply');
+
+    // Get outputs
+    output = getTerraformOutputJson(edgeAuthDir);
+  } finally {
+    // Clean up tfvars file (contains sensitive data) even if deploy fails
+    if (fs.existsSync(tfvarsPath)) fs.unlinkSync(tfvarsPath);
+  }
+
+  // Step 7: Invalidate CloudFront cache
+  const distributionId = output.cloudfront_distribution_id?.value;
+  if (distributionId) {
+    console.log('\nStep 6: Invalidating CloudFront cache...');
+    try {
+      execSync(
+        `aws cloudfront create-invalidation --distribution-id ${distributionId} --paths "/*" --region us-east-1`,
+        { stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      console.log('  CloudFront cache invalidation created');
+    } catch (invalidationError) {
+      console.warn('  Warning: CloudFront cache invalidation failed:', invalidationError.message);
+      console.warn('  (TTLs are 0, caching is effectively disabled)');
+    }
+  }
+
+  const cloudfrontDomain = output.cloudfront_domain?.value;
+  const cloudfrontUrl = output.cloudfront_url?.value || `https://${cloudfrontDomain}`;
+
+  console.log('\n========================================');
+  console.log('Edge Authentication Updated (in-place)');
+  console.log('========================================');
+  console.log(`CloudFront Domain: ${cloudfrontDomain}`);
+  console.log(`CloudFront URL: ${cloudfrontUrl}`);
+  console.log(`Distribution ID: ${distributionId}`);
+  console.log('========================================\n');
+
+  return {
+    cloudfrontDomain,
+    cloudfrontUrl,
+    publicKey,
+    distributionId
+  };
+}
+
 module.exports = {
   deployEdgeAuth,
   destroyEdgeAuth,
   generateEd25519KeyPair,
-  buildEdgeLambda
+  buildEdgeLambda,
+  hasEdgeAuthState,
+  getEdgeAuthState,
+  updateEdgeAuth
 };

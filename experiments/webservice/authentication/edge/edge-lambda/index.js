@@ -132,7 +132,7 @@ function verifyCognitoToken(token) {
 
   // Check expiration
   const now = Math.floor(Date.now() / 1000);
-  if (payload.exp && payload.exp < now) {
+  if (payload.exp && payload.exp < now - 5) {
     throw new Error('Token expired');
   }
 
