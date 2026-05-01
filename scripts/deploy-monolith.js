@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { runTerraform, getTerraformOutputJson, hasState, getAwsAccountId, getVpcIdFromState, waitForInstancesTerminated, cleanupVpcNetworkInterfaces } = require('./deploy-shared');
+const { runTerraform, getTerraformOutputJson, hasState, getAwsAccountId, getVpcIdFromState, waitForInstancesTerminated, cleanupVpcNetworkInterfaces, cleanupVpcSecurityGroups, importOrphanedVpcResources, ensureCognitoDeployed } = require('./deploy-shared');
 
 /**
  * Deploy Monolith architecture to AWS ECS using Terraform
@@ -32,6 +32,7 @@ async function deployMonolith(experiment, buildDir) {
     }
 
     runTerraform(vpcDir, 'init');
+    importOrphanedVpcResources(vpcDir);
     runTerraform(vpcDir, 'apply');
 
     // Step 3: Setup Redis
@@ -43,6 +44,9 @@ async function deployMonolith(experiment, buildDir) {
 
     runTerraform(redisDir, 'init');
     runTerraform(redisDir, 'apply');
+
+    // Ensure persistent Cognito pool is deployed (required by monolith Terraform config)
+    ensureCognitoDeployed(projectRoot);
 
     // Step 4: Create ECR repository via Terraform
     console.log('\nStep 4: Creating ECR repository...');
@@ -187,8 +191,8 @@ async function destroyMonolith(experiment) {
       // Service might not exist, ignore
     }
     // Wait a few seconds for tasks to start draining
-    console.log('Waiting for tasks to drain (10s)...');
-    await new Promise(resolve => setTimeout(resolve, 10000));
+    console.log('Waiting for tasks to drain (5s)...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
   }
 
   // Destroy in reverse order
@@ -212,9 +216,11 @@ async function destroyMonolith(experiment) {
   // Wait for any EC2 instances in the VPC to be fully terminated before destroying VPC
   // This prevents "DependencyViolation" errors when destroying subnets/security groups
   if (vpcId) {
-    await waitForInstancesTerminated(vpcId, awsRegion, 300);
+    await waitForInstancesTerminated(vpcId, awsRegion, 120);
     // Also cleanup any remaining ENIs that might block VPC deletion
     await cleanupVpcNetworkInterfaces(vpcId, awsRegion);
+    // Cleanup any orphaned security groups that might block VPC deletion
+    await cleanupVpcSecurityGroups(vpcId, awsRegion);
   }
 
   if (fs.existsSync(vpcDir) && hasState(vpcDir)) {

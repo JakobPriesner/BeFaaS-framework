@@ -65,6 +65,28 @@ variable "scale_in_cooldown" {
   default     = 180
 }
 
+variable "scaling_mode" {
+  description = "Auto-scaling mode: request_count (default), latency, or none"
+  type        = string
+  default     = "request_count"
+  validation {
+    condition     = contains(["request_count", "latency", "none"], var.scaling_mode)
+    error_message = "scaling_mode must be one of: request_count, latency, none"
+  }
+}
+
+variable "target_response_time" {
+  description = "Target average response time in seconds for latency-based scaling"
+  type        = number
+  default     = 0.3
+}
+
+variable "desired_count" {
+  description = "Initial number of tasks per service"
+  type        = number
+  default     = 1
+}
+
 variable "edge_public_key" {
   description = "Ed25519 public key for edge authentication (base64 encoded)"
   type        = string

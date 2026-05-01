@@ -1,10 +1,3 @@
-/**
- * Edge-based Authentication - Login Handler
- *
- * Authenticates users via AWS Cognito and returns tokens.
- * The external token will be transformed to an internal token
- * by Lambda@Edge on subsequent requests.
- */
 
 const {
   CognitoIdentityProviderClient,
@@ -22,9 +15,6 @@ const cognitoClient = new CognitoIdentityProviderClient({
   region: AWS_REGION
 });
 
-/**
- * Log auth timing in BEFAAS format
- */
 function logAuthTiming(contextId, durationMs, success) {
   console.log(
     'BEFAAS' +
@@ -46,15 +36,6 @@ function logAuthTiming(contextId, durationMs, success) {
   );
 }
 
-/**
- * Login handler for edge auth mode.
- * Returns Cognito tokens - the access token will be transformed
- * to an internal token by Lambda@Edge on subsequent requests.
- *
- * @param {Object} event - Request event with userName and password
- * @param {Object} ctx - Context object
- * @returns {Object} - Login result with tokens
- */
 async function handle(event, ctx) {
   const startTime = performance.now();
   const contextId = ctx?.contextId || 'unknown';
@@ -93,8 +74,6 @@ async function handle(event, ctx) {
       accessToken: response.AuthenticationResult.AccessToken,
       idToken: response.AuthenticationResult.IdToken,
       refreshToken: response.AuthenticationResult.RefreshToken
-      // Note: Client should use accessToken for subsequent requests
-      // Lambda@Edge will transform it to an internal token
     };
   } catch (error) {
     const duration = performance.now() - startTime;

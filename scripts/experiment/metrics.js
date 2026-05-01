@@ -138,7 +138,7 @@ async function collectMetrics(experiment, outputDir, experimentStartTime, archit
         }
 
         // Also collect edge Lambda logs if edge auth is used
-        if (auth === 'edge') {
+        if (auth === 'edge' || auth === 'edge-selective') {
           console.log('Collecting Lambda@Edge logs...');
           const edgeConfig = { architecture, auth };
           const edgeResult = await collectAndCleanupLambdaLogs(edgeConfig, outputDir, startTime, endTime, true);

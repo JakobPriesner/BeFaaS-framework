@@ -348,6 +348,10 @@ resource "aws_ecs_task_definition" "monolith" {
           value = "3000"
         },
         {
+          name  = "BEFAAS_FN_NAME"
+          value = "monolith"
+        },
+        {
           name  = "NODE_ENV"
           value = "production"
         },
@@ -457,8 +461,10 @@ resource "aws_appautoscaling_target" "monolith" {
   depends_on = [aws_ecs_service.monolith]
 }
 
-# Auto-Scaling Policy - Target Tracking on CPU
+# Auto-Scaling Policy - Target Tracking on CPU (request_count mode only)
 resource "aws_appautoscaling_policy" "monolith_cpu" {
+  count = var.scaling_mode == "request_count" ? 1 : 0
+
   name               = "${local.project_name}-monolith-cpu-scaling"
   policy_type        = "TargetTrackingScaling"
   resource_id        = aws_appautoscaling_target.monolith.resource_id
@@ -472,17 +478,15 @@ resource "aws_appautoscaling_policy" "monolith_cpu" {
 
     target_value = var.target_cpu_utilization
 
-    # Scale-out cooldown: 60s (Fast Response)
     scale_out_cooldown = var.scale_out_cooldown
-
-    # Scale-in cooldown: 300s (Slow Shrinkage)
-    # Verhältnis T_in/T_out = 300/60 = 5.0 (exceeds minimum of 3.0)
-    scale_in_cooldown = var.scale_in_cooldown
+    scale_in_cooldown  = var.scale_in_cooldown
   }
 }
 
-# Auto-Scaling Policy - Target Tracking on ALB Request Count
+# Auto-Scaling Policy - Target Tracking on ALB Request Count (request_count mode only)
 resource "aws_appautoscaling_policy" "monolith_requests" {
+  count = var.scaling_mode == "request_count" ? 1 : 0
+
   name               = "${local.project_name}-monolith-request-scaling"
   policy_type        = "TargetTrackingScaling"
   resource_id        = aws_appautoscaling_target.monolith.resource_id
@@ -497,7 +501,35 @@ resource "aws_appautoscaling_policy" "monolith_requests" {
 
     target_value = var.target_request_count
 
-    # Use same cooldown settings as CPU scaling for consistency
+    scale_out_cooldown = var.scale_out_cooldown
+    scale_in_cooldown  = var.scale_in_cooldown
+  }
+}
+
+# Auto-Scaling Policy - Target Tracking on ALB Response Time (latency mode only)
+resource "aws_appautoscaling_policy" "monolith_latency" {
+  count = var.scaling_mode == "latency" ? 1 : 0
+
+  name               = "${local.project_name}-monolith-latency-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.monolith.resource_id
+  scalable_dimension = aws_appautoscaling_target.monolith.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.monolith.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    customized_metric_specification {
+      metric_name = "TargetResponseTime"
+      namespace   = "AWS/ApplicationELB"
+      statistic   = "Average"
+
+      dimensions {
+        name  = "LoadBalancer"
+        value = aws_lb.monolith.arn_suffix
+      }
+    }
+
+    target_value = var.target_response_time
+
     scale_out_cooldown = var.scale_out_cooldown
     scale_in_cooldown  = var.scale_in_cooldown
   }

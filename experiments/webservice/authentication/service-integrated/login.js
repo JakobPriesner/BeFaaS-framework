@@ -12,28 +12,7 @@ const cognitoClient = new CognitoIdentityProviderClient({
 
 const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID
 
-/**
- * Login Service for 'service-integrated' auth mode.
- * Authenticates a user against Cognito and returns JWT tokens.
- *
- * Ex Payload Body: {
- *   "userName": "testuser",
- *   "password": "TestPassword123!"
- * }
- *
- * Response on success: {
- *   "success": true,
- *   "accessToken": "...",
- *   "idToken": "...",
- *   "refreshToken": "..."
- * }
- *
- * Response on failure: {
- *   "success": false,
- *   "error": "..."
- * }
- */
-async function handle(event, ctx) {
+async function handle (event, ctx) {
   const { userName, password } = event
 
   if (!userName || !password) {

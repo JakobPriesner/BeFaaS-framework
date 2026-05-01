@@ -2,8 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
-const readline = require('readline');
 const yaml = require('js-yaml');
 
 // Import modules
@@ -14,7 +12,7 @@ const { runDeploy, runDestroy, resetCognitoUserPool, forceDestroyRedis } = requi
 const { runBenchmark } = require('./experiment/benchmark');
 const { collectMetrics } = require('./experiment/metrics');
 const { collectCloudWatchMetrics } = require('./experiment/cloudwatch-metrics');
-const { collectAndCleanupLambdaLogs, cleanupOldLogGroupsForRun, cleanupAllOrphanedLogGroups, cleanupAllEdgeLambdaLogs } = require('./experiment/lambda-logs');
+const { cleanupOldLogGroupsForRun, cleanupAllOrphanedLogGroups, cleanupAllEdgeLambdaLogs } = require('./experiment/lambda-logs');
 const { collectPricingMetrics } = require('./experiment/pricing');
 const { analyzeResults } = require('./experiment/analysis');
 const {
@@ -23,251 +21,13 @@ const {
   checkHealth,
   cleanupBuildArtifacts,
   uploadResultsToS3,
-  deleteLocalResults,
   setupLogging,
   parseCpuInfoFromLogs
 } = require('./experiment/utils');
 const { getTerraformOutputJson } = require('./deploy-shared');
 
-/**
- * Run a single benchmark phase including benchmark execution, metrics collection, and analysis
- * @param {Object} config - Experiment configuration
- * @param {string} phaseName - Name of the benchmark phase (e.g., 'baseline', 'scaling')
- * @param {string} workload - Workload file to use
- * @param {string} phaseOutputDir - Output directory for this phase
- * @returns {number} - Start timestamp for this phase
- */
-async function runBenchmarkPhase(config, phaseName, workload, phaseOutputDir) {
-  logSection(`Benchmark Phase: ${phaseName}`);
-
-  // Create phase output directory
-  if (!fs.existsSync(phaseOutputDir)) {
-    fs.mkdirSync(phaseOutputDir, { recursive: true });
-  }
-
-  // Record phase start time (subtract 1 minute buffer)
-  const phaseStartTime = Date.now() - 60000;
-
-  // Write timestamp to file for reference
-  const timestampFile = path.join(phaseOutputDir, 'experiment_start_time.txt');
-  fs.writeFileSync(timestampFile, `${phaseStartTime}\n${new Date(phaseStartTime).toISOString()}`);
-  console.log(`Phase start time recorded: ${new Date(phaseStartTime).toISOString()}`);
-
-  // Reset Cognito User Pool before benchmark
-  await resetCognitoUserPool();
-
-  // Run benchmark
-  await runBenchmark(config.experiment, workload, phaseOutputDir, config.auth, config.architecture);
-
-  // Record phase end time (add 1 minute buffer to capture trailing metrics)
-  const phaseEndTime = Date.now() + 60000;
-
-  // Collect metrics
-  if (!config.skipMetrics) {
-    await collectMetrics(config.experiment, phaseOutputDir, phaseStartTime, config.architecture, config.auth);
-
-    // Note: Lambda log collection for FaaS is already handled by collectMetrics()
-    // Do NOT call collectAndCleanupLambdaLogs() again here - it would overwrite the logs!
-
-    // Collect CloudWatch metrics for all architectures
-    await collectCloudWatchMetrics(config, phaseOutputDir, phaseStartTime, phaseEndTime);
-
-    // Collect pricing metrics for all architectures
-    await collectPricingMetrics(config, phaseOutputDir, phaseStartTime, phaseEndTime);
-  }
-
-  // Analyze results
-  await analyzeResults(config.experiment, phaseOutputDir);
-
-  return phaseStartTime;
-}
-
 // Note: Redis preregistration now runs on the workload EC2 instance
 // inside the Docker container (see artillery/preregister-redis.js)
-
-/**
- * Wait for infrastructure to scale down
- * @param {number} seconds - Seconds to wait
- */
-async function waitForScaleDown(seconds) {
-  logSection(`Waiting for Scale Down (${seconds}s)`);
-  console.log(`Allowing ${seconds} seconds for infrastructure to scale down...`);
-
-  const intervalMs = 30000; // Log every 30 seconds
-  const totalMs = seconds * 1000;
-  let elapsed = 0;
-
-  while (elapsed < totalMs) {
-    await new Promise(resolve => setTimeout(resolve, Math.min(intervalMs, totalMs - elapsed)));
-    elapsed += intervalMs;
-    if (elapsed < totalMs) {
-      console.log(`  ${Math.round(elapsed / 1000)}s / ${seconds}s elapsed...`);
-    }
-  }
-
-  console.log('Scale down wait complete.');
-}
-
-/**
- * Combine insights.json from all benchmark phases into a single combined insights file
- * @param {string} outputDir - Root output directory
- * @param {string[]} phases - Array of phase names
- * @param {Object} config - Experiment configuration
- */
-function combinePhaseInsights(outputDir, phases, config) {
-  logSection('Combining Phase Insights');
-
-  const combinedInsights = {
-    meta: {
-      generated_at: new Date().toISOString(),
-      experiment: config.experiment,
-      architecture: config.architecture,
-      auth: config.auth,
-      memory: config.memory,
-      phases: phases
-    },
-    phases: {},
-    comparison: {
-      overall: {},
-      endpoints: {},
-      categories: {}
-    },
-    pricing: {
-      phases: {},
-      total: null
-    }
-  };
-
-  // Load insights from each phase
-  for (const phase of phases) {
-    const insightsPath = path.join(outputDir, phase, 'analysis', 'insights.json');
-    if (fs.existsSync(insightsPath)) {
-      try {
-        const phaseInsights = JSON.parse(fs.readFileSync(insightsPath, 'utf8'));
-        combinedInsights.phases[phase] = phaseInsights;
-        console.log(`✓ Loaded insights from ${phase}`);
-      } catch (error) {
-        console.log(`⚠️  Failed to load insights from ${phase}: ${error.message}`);
-      }
-    } else {
-      console.log(`⚠️  No insights.json found for phase ${phase}`);
-    }
-  }
-
-  // Generate comparison data across phases
-  const loadedPhases = Object.keys(combinedInsights.phases);
-  if (loadedPhases.length > 1) {
-    console.log('\nGenerating cross-phase comparison...');
-
-    // Compare overall metrics
-    combinedInsights.comparison.overall = {};
-    for (const phase of loadedPhases) {
-      const phaseData = combinedInsights.phases[phase];
-      if (phaseData.overall) {
-        combinedInsights.comparison.overall[phase] = {
-          total_requests: phaseData.overall.total_requests,
-          mean_ms: phaseData.overall.mean_ms,
-          median_ms: phaseData.overall.median_ms,
-          p95_ms: phaseData.overall.p95_ms,
-          p99_ms: phaseData.overall.p99_ms
-        };
-      }
-    }
-
-    // Compare endpoints across phases
-    const allEndpoints = new Set();
-    for (const phase of loadedPhases) {
-      const phaseData = combinedInsights.phases[phase];
-      if (phaseData.endpoints) {
-        Object.keys(phaseData.endpoints).forEach(ep => allEndpoints.add(ep));
-      }
-    }
-
-    for (const endpoint of allEndpoints) {
-      combinedInsights.comparison.endpoints[endpoint] = {};
-      for (const phase of loadedPhases) {
-        const phaseData = combinedInsights.phases[phase];
-        if (phaseData.endpoints && phaseData.endpoints[endpoint]) {
-          combinedInsights.comparison.endpoints[endpoint][phase] = {
-            request_count: phaseData.endpoints[endpoint].request_count,
-            mean_ms: phaseData.endpoints[endpoint].mean_ms,
-            p95_ms: phaseData.endpoints[endpoint].p95_ms
-          };
-        }
-      }
-    }
-
-    // Compare categories across phases
-    const allCategories = new Set();
-    for (const phase of loadedPhases) {
-      const phaseData = combinedInsights.phases[phase];
-      if (phaseData.categories) {
-        Object.keys(phaseData.categories).forEach(cat => allCategories.add(cat));
-      }
-    }
-
-    for (const category of allCategories) {
-      combinedInsights.comparison.categories[category] = {};
-      for (const phase of loadedPhases) {
-        const phaseData = combinedInsights.phases[phase];
-        if (phaseData.categories && phaseData.categories[category]) {
-          combinedInsights.comparison.categories[category][phase] = {
-            request_count: phaseData.categories[category].request_count,
-            mean_ms: phaseData.categories[category].mean_ms,
-            p95_ms: phaseData.categories[category].p95_ms
-          };
-        }
-      }
-    }
-
-    console.log('✓ Cross-phase comparison generated');
-  }
-
-  // Load and aggregate pricing data from each phase
-  console.log('\nAggregating pricing data...');
-  for (const phase of phases) {
-    const pricingPath = path.join(outputDir, phase, 'pricing', 'pricing.json');
-    if (fs.existsSync(pricingPath)) {
-      try {
-        const phasePricing = JSON.parse(fs.readFileSync(pricingPath, 'utf8'));
-        combinedInsights.pricing.phases[phase] = phasePricing.summary;
-        console.log(`✓ Loaded pricing from ${phase}: $${phasePricing.summary.total_cost.toFixed(6)}`);
-      } catch (error) {
-        console.log(`⚠️  Failed to load pricing from ${phase}: ${error.message}`);
-      }
-    } else {
-      console.log(`⚠️  No pricing.json found for phase ${phase}`);
-    }
-  }
-
-  // Calculate total pricing across all phases
-  const pricingPhases = Object.values(combinedInsights.pricing.phases);
-  if (pricingPhases.length > 0) {
-    const totalCost = pricingPhases.reduce((sum, p) => sum + (p.total_cost || 0), 0);
-    const combinedBreakdown = {};
-
-    for (const phaseSummary of pricingPhases) {
-      for (const [resource, cost] of Object.entries(phaseSummary.breakdown || {})) {
-        combinedBreakdown[resource] = (combinedBreakdown[resource] || 0) + cost;
-      }
-    }
-
-    combinedInsights.pricing.total = {
-      total_cost: totalCost,
-      breakdown: combinedBreakdown,
-      currency: 'USD'
-    };
-
-    console.log(`✓ Total experiment cost: $${totalCost.toFixed(6)}`);
-  }
-
-  // Write combined insights to root output directory
-  const combinedPath = path.join(outputDir, 'insights.json');
-  fs.writeFileSync(combinedPath, JSON.stringify(combinedInsights, null, 2));
-  console.log(`\n✓ Combined insights written to: ${combinedPath}`);
-
-  return combinedInsights;
-}
 
 /**
  * Prompt user for confirmation before continuing
@@ -275,17 +35,10 @@ function combinePhaseInsights(outputDir, phases, config) {
  * @returns {Promise<boolean>} - True if user confirms, false otherwise
  */
 async function waitForUserConfirmation(message) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-
-  return new Promise((resolve) => {
-    rl.question(`\n${message}\nPress Enter to continue or Ctrl+C to abort... `, () => {
-      rl.close();
-      resolve(true);
-    });
-  });
+  console.warn(`\n⚠️  ${message}`);
+  console.warn('Continuing automatically after 10 seconds...');
+  await new Promise(resolve => setTimeout(resolve, 10000));
+  return true;
 }
 
 /**
@@ -392,6 +145,9 @@ async function main() {
   if (config.algorithm) {
     console.log(`  Algorithm: ${config.algorithm}`);
   }
+  if (config.withCloudfront) {
+    console.log(`  CloudFront Proxy: enabled (passthrough)`);
+  }
 
   // Hardware configuration
   if (config.architecture === 'faas') {
@@ -399,14 +155,11 @@ async function main() {
   } else {
     console.log(`  Fargate CPU: ${config.cpu} units (${config.cpu / 1024} vCPU)`);
     console.log(`  Fargate Memory: ${config.memoryFargate} MB`);
+    console.log(`  Scaling Mode: ${config.scalingMode}`);
   }
 
   console.log(`  Workload: ${config.workload}`);
   console.log(`  Run ID: ${config.runId}`);
-  console.log(`  Scaling Test: ${config.scaling ? 'enabled' : 'disabled'}`);
-  if (config.scaling) {
-    console.log(`  Scale Down Wait: ${config.scaleDownWait}s`);
-  }
   console.log(`  Output Directory: ${config.outputDir}`);
   console.log(`  Log File: ${logFile}`);
 
@@ -417,7 +170,7 @@ async function main() {
     // Step 0: Validate environment, set hardware config, and install Terraform providers
     validateEnvironment(config.experiment);
     setHardwareConfig(config);
-    installTerraformProviders();
+    installTerraformProviders(config.experiment);
 
     // Skip all pre-benchmark steps if --skip-benchmark is set
     if (!config.skipBenchmark) {
@@ -432,7 +185,7 @@ async function main() {
           console.warn('Warning: Could not force destroy Redis:', redisError.message);
         }
 
-        await runDestroy(config.experiment, config.architecture, config.auth);
+        await runDestroy(config.experiment, config.architecture, config.auth, { skipEdgeAuth: config.reuseEdgeAuth, withCloudfront: config.withCloudfront });
       } catch (error) {
         console.log('No existing infrastructure to destroy or destroy failed:', error.message);
       }
@@ -445,7 +198,9 @@ async function main() {
       }
 
       // Step 2: Build
-      buildDir = await runBuild(config.experiment, config.architecture, config.auth, config.bundleMode, config.algorithm);
+      // Map edge-selective to edge for build (same auth code, only CloudFront routing differs)
+      const buildAuth = config.auth === 'edge-selective' ? 'edge' : config.auth;
+      buildDir = await runBuild(config.experiment, config.architecture, buildAuth, config.algorithm);
 
       // Step 3: Deploy
       // Record experiment start time (in milliseconds for AWS CloudWatch)
@@ -463,10 +218,12 @@ async function main() {
         auth_strategy: config.auth,
         aws_service: config.architecture === 'faas' ? 'lambda' : 'ecs fargate',
         ram_in_mb: config.architecture === 'faas' ? config.memory : config.memoryFargate,
+        with_cloudfront: config.withCloudfront,
         datetime: config.runId.split('_').pop() // Extract timestamp from runId
       };
       if (config.architecture !== 'faas') {
         hardwareConfig.cpu_in_vcpu = config.cpu / 1024;
+        hardwareConfig.scaling_mode = config.scalingMode;
       }
       if (config.algorithm) {
         const algorithmMap = {
@@ -502,16 +259,17 @@ async function main() {
       process.env.TF_VAR_run_id = config.runId;
       console.log(`Run ID: ${config.runId}`);
 
-      const endpoints = await runDeploy(config.experiment, config.architecture, buildDir, config.auth, config.algorithm);
+      const endpoints = await runDeploy(config.experiment, config.architecture, buildDir, config.auth, config.algorithm, config.reuseEdgeAuth, config.withCloudfront);
 
       // Capture per-service scaling rules from Terraform state into hardware_config.json
       updateHardwareConfigWithScalingRules(config, config.outputDir);
 
       // Wait for deployment to stabilize
       const isEcsBased = config.architecture === 'monolith' || config.architecture === 'microservices';
-      const isEdgeAuth = config.auth === 'edge';
+      const isEdgeAuth = config.auth === 'edge' || config.auth === 'edge-selective';
+      const hasCloudfront = isEdgeAuth || config.withCloudfront;
       // CloudFront takes longer to propagate (3-5 min creation + propagation time)
-      const stabilizationDelay = isEcsBased ? 180000 : (isEdgeAuth ? 60000 : 5000); // 3 min for ecs, 1 min for edge, 5s for Lambda
+      const stabilizationDelay = isEcsBased ? 180000 : (hasCloudfront ? 60000 : 5000); // 3 min for ecs, 1 min for edge/cf, 5s for Lambda
       const healthCheckRetries = 120;
       const healthCheckDelay = isEcsBased ? 30000 : 3000; // 30s for ecs, 3s for Lambda
 
@@ -528,80 +286,37 @@ async function main() {
       // inside the Docker container (see artillery/preregister-redis.js)
       // The AUTH_MODE env var is passed via workload.sh -> terraform
 
-      // Step 4-7: Run Benchmark Phases
-      const isMultiPhase = config.scaling;
+      // Step 4-7: Run Benchmark
+      await resetCognitoUserPool();
+      await runBenchmark(config.experiment, config.workload, config.outputDir, config.auth, config.architecture, config.algorithm);
 
-      if (isMultiPhase) {
-        // Multi-phase benchmark mode
-        const enabledPhases = ['baseline'];
-        if (config.scaling) enabledPhases.push('scaling');
-        logSection('Multi-Phase Benchmark Mode');
-        console.log(`Running phases: ${enabledPhases.join(', ')}\n`);
+      // Record end time (add 1 minute buffer to capture trailing metrics)
+      const experimentEndTime = Date.now() + 60000;
 
-        // Phase 1: Baseline benchmark (always runs, using configured workload)
-        const baselineOutputDir = path.join(config.outputDir, 'baseline');
-        await runBenchmarkPhase(config, 'Baseline', config.workload, baselineOutputDir);
+      if (!config.skipMetrics) {
+        await collectMetrics(config.experiment, config.outputDir, experimentStartTime, config.architecture, config.auth);
 
-        // Update hardware_config.json with CPU info from baseline logs
-        await updateHardwareConfigWithCpuInfo(path.join(baselineOutputDir, 'logs'), config.outputDir);
+        // Note: Lambda log collection for FaaS is already handled by collectMetrics()
+        // Do NOT call collectAndCleanupLambdaLogs() again here - it would overwrite the logs!
 
-        // Phase 2: Scaling benchmark (if enabled)
-        if (config.scaling) {
-          await waitForScaleDown(config.scaleDownWait);
-          const scalingOutputDir = path.join(config.outputDir, 'scaling');
-          await runBenchmarkPhase(config, 'Scaling', 'workload-scaling.yml', scalingOutputDir);
-        }
+        // Collect CloudWatch metrics for all architectures
+        await collectCloudWatchMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
 
-        // Write summary of all phases
-        const summaryFile = path.join(config.outputDir, 'benchmark_summary.json');
-        const summary = {
-          phases: enabledPhases,
-          baselineWorkload: config.workload,
-          architecture: config.architecture,
-          auth: config.auth,
-          memory: config.memory,
-          scaleDownWait: config.scaleDownWait,
-          completedAt: new Date().toISOString()
-        };
-        fs.writeFileSync(summaryFile, JSON.stringify(summary, null, 2));
-        console.log(`\nBenchmark summary written to: ${summaryFile}`);
-
-        // Combine insights from all phases into a single insights.json
-        combinePhaseInsights(config.outputDir, enabledPhases, config);
-
-      } else {
-        // Single-phase benchmark (original behavior - baseline only)
-        await resetCognitoUserPool();
-        await runBenchmark(config.experiment, config.workload, config.outputDir, config.auth, config.architecture);
-
-        // Record end time (add 1 minute buffer to capture trailing metrics)
-        const experimentEndTime = Date.now() + 60000;
-
-        if (!config.skipMetrics) {
-          await collectMetrics(config.experiment, config.outputDir, experimentStartTime, config.architecture, config.auth);
-
-          // Note: Lambda log collection for FaaS is already handled by collectMetrics()
-          // Do NOT call collectAndCleanupLambdaLogs() again here - it would overwrite the logs!
-
-          // Collect CloudWatch metrics for all architectures
-          await collectCloudWatchMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
-
-          // Collect pricing metrics for all architectures
-          await collectPricingMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
-        }
-
-        // Update hardware_config.json with CPU info from collected logs
-        await updateHardwareConfigWithCpuInfo(path.join(config.outputDir, 'logs'), config.outputDir);
-
-        await analyzeResults(config.experiment, config.outputDir);
+        // Collect pricing metrics for all architectures
+        await collectPricingMetrics(config, config.outputDir, experimentStartTime, experimentEndTime);
       }
+
+      // Update hardware_config.json with CPU info from collected logs
+      await updateHardwareConfigWithCpuInfo(path.join(config.outputDir, 'logs'), config.outputDir);
+
+      await analyzeResults(config.experiment, config.outputDir);
     }
 
     // Step 8: Destroy infrastructure if requested
     let destroyFailed = false;
     if (config.destroy) {
       try {
-        await runDestroy(config.experiment, config.architecture, config.auth);
+        await runDestroy(config.experiment, config.architecture, config.auth, { skipEdgeAuth: config.keepEdgeAuth, withCloudfront: config.withCloudfront });
         cleanupBuildArtifacts(config.experiment, config.architecture);
       } catch (destroyError) {
         destroyFailed = true;
@@ -624,7 +339,7 @@ async function main() {
       }
 
       // Clean up Lambda@Edge log groups if edge auth was used
-      if (config.auth === 'edge') {
+      if ((config.auth === 'edge' || config.auth === 'edge-selective') && !config.keepEdgeAuth) {
         logSection('Cleaning Up Lambda@Edge Log Groups');
         try {
           await cleanupAllEdgeLambdaLogs();
@@ -729,7 +444,6 @@ ${error.stack}
 
     // Cleanup and destroy on error (logs already collected, so this can fail safely)
     console.log('\nCleaning up infrastructure...');
-    let cleanupSucceeded = true;
     try {
       // Force destroy Redis containers first to prevent hanging
       console.log('Force destroying Redis containers...');
@@ -740,7 +454,7 @@ ${error.stack}
       }
 
       // Destroy infrastructure (logs already collected)
-      await runDestroy(config.experiment, config.architecture, config.auth);
+      await runDestroy(config.experiment, config.architecture, config.auth, { skipEdgeAuth: config.keepEdgeAuth, withCloudfront: config.withCloudfront });
       cleanupBuildArtifacts(config.experiment, config.architecture);
 
       // Clean up CloudWatch log groups AFTER terraform destroy
@@ -755,7 +469,7 @@ ${error.stack}
       }
 
       // Clean up Lambda@Edge log groups if edge auth was used
-      if (config.auth === 'edge') {
+      if ((config.auth === 'edge' || config.auth === 'edge-selective') && !config.keepEdgeAuth) {
         console.log('Cleaning up Lambda@Edge log groups...');
         try {
           await cleanupAllEdgeLambdaLogs();
@@ -764,7 +478,6 @@ ${error.stack}
         }
       }
     } catch (cleanupError) {
-      cleanupSucceeded = false;
       console.error('\n⚠️  Infrastructure cleanup failed:', cleanupError.message);
       console.log('Logs and metrics have been collected and analyzed.');
       console.log('You may need to manually destroy the infrastructure or retry later.');

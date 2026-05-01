@@ -1,5 +1,3 @@
-# Outputs for pricing metrics collection
-
 output "lambda_function_names" {
   description = "Map of function names to their full AWS function names"
   value = {

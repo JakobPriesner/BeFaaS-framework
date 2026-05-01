@@ -1,7 +1,6 @@
 const express = require('express')
 const { configureBeFaaSLib, callService } = require('./shared/libConfig')
 
-// Import handler functions
 const getProduct = require('./functions/getproduct')
 const listProducts = require('./functions/listproducts')
 const searchProducts = require('./functions/searchproducts')
@@ -10,20 +9,18 @@ const listRecommendations = require('./functions/listrecommendations')
 const app = express()
 app.use(express.json())
 
-// Configure microservices
 const { namespace } = configureBeFaaSLib()
 
-// Create context object for service-to-service calls
-// @param {string|null} authHeader - Optional Authorization header to propagate
-function createContext(authHeader = null) {
+function createContext (authHeader = null, contextId = null, xPair = null) {
   return {
+    contextId,
+    xPair,
     call: async (functionName, event) => {
       // Include auth header in event for verifyJWT
       const eventWithHeaders = authHeader
         ? { ...event, headers: { authorization: authHeader } }
         : event
 
-      // Route internal product-service calls in-process
       if (functionName === 'getproduct') {
         return await getProduct(eventWithHeaders, createContext(authHeader))
       }
@@ -36,22 +33,19 @@ function createContext(authHeader = null) {
       if (functionName === 'listrecommendations') {
         return await listRecommendations(eventWithHeaders, createContext(authHeader))
       }
-      // External service calls go through HTTP
       return await callService(functionName, event, authHeader)
     }
   }
 }
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'product-service' })
 })
 
-// Product Service Routes
 app.post('/getproduct', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
-    const ctx = createContext(authHeader)
+    const ctx = createContext(authHeader, req.headers['x-context'], req.headers['x-pair'])
     const event = authHeader
       ? { ...req.body, headers: { authorization: authHeader } }
       : req.body
@@ -66,7 +60,7 @@ app.post('/getproduct', async (req, res) => {
 app.post('/listproducts', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
-    const ctx = createContext(authHeader)
+    const ctx = createContext(authHeader, req.headers['x-context'], req.headers['x-pair'])
     const event = authHeader
       ? { ...req.body, headers: { authorization: authHeader } }
       : req.body
@@ -81,7 +75,7 @@ app.post('/listproducts', async (req, res) => {
 app.post('/searchproducts', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
-    const ctx = createContext(authHeader)
+    const ctx = createContext(authHeader, req.headers['x-context'], req.headers['x-pair'])
     const event = authHeader
       ? { ...req.body, headers: { authorization: authHeader } }
       : req.body
@@ -96,7 +90,7 @@ app.post('/searchproducts', async (req, res) => {
 app.post('/listrecommendations', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
-    const ctx = createContext(authHeader)
+    const ctx = createContext(authHeader, req.headers['x-context'], req.headers['x-pair'])
     const event = authHeader
       ? { ...req.body, headers: { authorization: authHeader } }
       : req.body
@@ -110,13 +104,11 @@ app.post('/listrecommendations', async (req, res) => {
 
 const port = process.env.PORT || 3001
 
-// Start server (ECS handles service registration automatically)
 app.listen(port, () => {
   console.log(`Product Service listening on port ${port}`)
   console.log(`Using Cloud Map namespace: ${namespace}`)
 })
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM signal received: closing HTTP server')
   process.exit(0)

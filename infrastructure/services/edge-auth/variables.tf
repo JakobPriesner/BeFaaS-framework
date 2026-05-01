@@ -60,3 +60,15 @@ variable "cloudfront_secret" {
   default     = ""
   sensitive   = true
 }
+
+variable "selective_edge_routing" {
+  description = "When true, only protected paths are routed through Lambda@Edge. Public paths bypass Lambda@Edge entirely."
+  type        = bool
+  default     = false
+}
+
+variable "protected_paths" {
+  description = "Path prefixes for ordered_cache_behavior in selective mode. Must match the actual URL structure of the origin (e.g., '/frontend/cart' for FaaS, '/cart' for microservices/monolith)."
+  type        = list(string)
+  default     = ["/cart", "/addCartItem", "/emptyCart", "/checkout"]
+}

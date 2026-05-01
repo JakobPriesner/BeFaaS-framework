@@ -24,8 +24,6 @@ class AlbMetricData:
     http_2xx_count: Optional[int] = None
     http_4xx_count: Optional[int] = None
     http_5xx_count: Optional[int] = None
-    active_connections: Optional[int] = None
-    healthy_hosts: Optional[int] = None
 
 
 @dataclass
@@ -78,7 +76,7 @@ def parse_alb_metrics(path: Path) -> List[AlbMetricData]:
     Expected columns:
     timestamp,ALB Request Count,ALB Target Response Time (avg),
     ALB Target Response Time (p95),ALB HTTP 2XX Count,ALB HTTP 4XX Count,
-    ALB HTTP 5XX Count,ALB Active Connections,Target Group Healthy Hosts
+    ALB HTTP 5XX Count
 
     Args:
         path: Path to alb_metrics.csv
@@ -108,8 +106,6 @@ def parse_alb_metrics(path: Path) -> List[AlbMetricData]:
                     http_2xx_count=_parse_int(row.get('ALB HTTP 2XX Count', '')),
                     http_4xx_count=_parse_int(row.get('ALB HTTP 4XX Count', '')),
                     http_5xx_count=_parse_int(row.get('ALB HTTP 5XX Count', '')),
-                    active_connections=_parse_int(row.get('ALB Active Connections', '')),
-                    healthy_hosts=_parse_int(row.get('Target Group Healthy Hosts', '')),
                 ))
 
     except IOError as e:

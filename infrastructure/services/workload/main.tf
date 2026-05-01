@@ -16,6 +16,12 @@ variable "architecture" {
   default     = "faas"
 }
 
+variable "algorithm" {
+  description = "Auth algorithm variant for service-integrated-manual (argon2id-eddsa or bcrypt-hs256)"
+  type        = string
+  default     = "argon2id-eddsa"
+}
+
 data "terraform_remote_state" "exp" {
   backend = "local"
 
@@ -164,7 +170,7 @@ resource "aws_instance" "workload" {
       "sudo systemctl start docker",
       "sudo systemctl enable docker",
       "sudo docker load -i /tmp/image.tar.gz",
-      "sudo docker run --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} -e ARTILLERY_VALIDATION_MODE=${var.validation_mode} -e REDIS_ENDPOINT=${local.redis_endpoint} -e AUTH_MODE=${var.auth_mode} befaas/artillery"
+      "sudo docker run --rm -e BEFAAS_DEPLOYMENT_ID=${local.deployment_id} -e ARTILLERY_VALIDATION_MODE=${var.validation_mode} -e REDIS_ENDPOINT=${local.redis_endpoint} -e AUTH_MODE=${var.auth_mode} -e ALGORITHM=${var.algorithm} befaas/artillery"
     ]
   }
 }

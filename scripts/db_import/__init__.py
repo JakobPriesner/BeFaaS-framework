@@ -27,6 +27,7 @@ from .schema import (
     PricingComponent,
     MetricsEcs,
     MetricsAlb,
+    EdgeAuthEvent,
     create_tables,
     drop_tables,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "PricingComponent",
     "MetricsEcs",
     "MetricsAlb",
+    "EdgeAuthEvent",
     "create_tables",
     "drop_tables",
     # Importer

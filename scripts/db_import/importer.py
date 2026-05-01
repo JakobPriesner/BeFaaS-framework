@@ -49,7 +49,7 @@ FLUSH_DELAY_SECONDS = float(os.getenv('DB_IMPORT_FLUSH_DELAY', '0.1'))
 from .schema import (
     Base, Experiment, ScalingRule, Phase, Request, LambdaExecution,
     HandlerEvent, ContainerStart, RpcCall, Pricing, PricingComponent,
-    MetricsEcs, MetricsAlb, SchemaDocumentation,
+    MetricsEcs, MetricsAlb, EdgeAuthEvent, SchemaDocumentation,
     create_tables, add_table_comments, add_column_comments, populate_schema_documentation
 )
 from .parsers import (
@@ -61,6 +61,7 @@ from .parsers import (
     parse_pricing,
     parse_artillery_log,
     parse_aws_log,
+    parse_edge_log,
     parse_alb_metrics,
     parse_ecs_metrics,
 )
@@ -190,6 +191,15 @@ TABLE_COLUMNS = {
         'success', 'is_cold_start', 'timestamp_ms', 'received_at_ms', 'relative_time_ms',
         'phase_index', 'phase_name', 'auth_type'
     ],
+    'edge_auth_events': [
+        'experiment_id', 'event_type', 'instance_id', 'lambda_request_id',
+        'timestamp_ms', 'relative_time_ms', 'now_perf_ms',
+        'uri', 'outcome', 'total_ms', 'key_resolve_ms', 'crypto_verify_ms',
+        'sign_ms', 'triggered_jwks_fetch', 'instance_age_ms',
+        'trigger', 'duration_ms', 'jwks_fetch_number', 'jwks_key_count',
+        'kid', 'since_last_ms', 'error',
+        'phase_index', 'phase_name',
+    ],
 }
 
 # Indexes to drop/recreate for faster import (keyed by table name)
@@ -231,6 +241,13 @@ TABLE_INDEXES = {
         ('idx_rpc_xpair', 'x_pair'),
         ('idx_rpc_exp_xpair', 'experiment_id, x_pair'),
         ('idx_rpc_exp_context', 'experiment_id, context_id'),
+    ],
+    'edge_auth_events': [
+        ('idx_edge_exp', 'experiment_id'),
+        ('idx_edge_exp_event', 'experiment_id, event_type'),
+        ('idx_edge_exp_outcome', 'experiment_id, outcome'),
+        ('idx_edge_exp_instance', 'experiment_id, instance_id'),
+        ('idx_edge_exp_ts', 'experiment_id, timestamp_ms'),
     ],
 }
 
@@ -570,6 +587,67 @@ def _create_rpc_call_records(rpc_calls, experiment_id, benchmark_start=None, x_p
         yield record
 
 
+def _phase_index_for_relative_time(relative_ms, phase_starts):
+    """Return the phase_index whose window contains relative_ms, or None.
+
+    phase_starts is a dict {phase_index: cumulative_start_ms}. We pick the
+    phase with the largest start <= relative_ms.
+    """
+    if relative_ms is None or not phase_starts:
+        return None
+    best_idx = None
+    best_start = -1
+    for idx, start in phase_starts.items():
+        if start <= relative_ms and start > best_start:
+            best_idx = idx
+            best_start = start
+    return best_idx
+
+
+def _create_edge_auth_event_records(edge_events, experiment_id, benchmark_start=None,
+                                     phase_starts=None, phase_name_by_index=None):
+    """Generator for edge_auth_events records.
+
+    Enriches with relative_time_ms and phase_index/phase_name from the
+    experiment's phase windows when available.
+    """
+    for e in edge_events:
+        record = {
+            'experiment_id': experiment_id,
+            'event_type': e.event_type,
+            'instance_id': e.instance_id,
+            'lambda_request_id': e.lambda_request_id,
+            'timestamp_ms': e.timestamp_ms,
+            'now_perf_ms': e.now_perf_ms,
+            'uri': e.uri,
+            'outcome': e.outcome,
+            'total_ms': e.total_ms,
+            'key_resolve_ms': e.key_resolve_ms,
+            'crypto_verify_ms': e.crypto_verify_ms,
+            'sign_ms': e.sign_ms,
+            'triggered_jwks_fetch': e.triggered_jwks_fetch,
+            'instance_age_ms': e.instance_age_ms,
+            'trigger': e.trigger,
+            'duration_ms': e.duration_ms,
+            'jwks_fetch_number': e.jwks_fetch_number,
+            'jwks_key_count': e.jwks_key_count,
+            'kid': e.kid,
+            'since_last_ms': e.since_last_ms,
+            'error': e.error,
+        }
+
+        if benchmark_start and e.timestamp_ms:
+            rel = e.timestamp_ms - benchmark_start
+            record['relative_time_ms'] = rel
+            phase_idx = _phase_index_for_relative_time(rel, phase_starts)
+            if phase_idx is not None:
+                record['phase_index'] = phase_idx
+                if phase_name_by_index and phase_idx in phase_name_by_index:
+                    record['phase_name'] = phase_name_by_index[phase_idx]
+
+        yield record
+
+
 def _create_optimized_request_records(requests, experiment_id, benchmark_start=None, phase_starts=None):
     """
     Create request records with pre-calculated derived fields.
@@ -629,6 +707,8 @@ def _post_process_optimized(session, exp_id, benchmark_start=None, phase_starts=
     print(f"  Post-processing derived fields...", flush=True)
 
     # Step 0: Calculate relative_time_ms for all tables
+    # Each table is committed separately to avoid oversized transactions that crash PostgreSQL.
+    # rpc_calls is batched because it can have millions of rows (e.g. 5M+ for monolith experiments).
     if benchmark_start:
         print(f"    Calculating relative_time_ms...", flush=True)
         step_start = time.time()
@@ -640,6 +720,7 @@ def _post_process_optimized(session, exp_id, benchmark_start=None, phase_starts=
             WHERE experiment_id = :exp_id AND relative_time_ms IS NULL
         """), {"start": benchmark_start, "exp_id": exp_id})
         requests_updated = result.rowcount
+        session.commit()
 
         # Handler events
         result = session.execute(text("""
@@ -648,6 +729,7 @@ def _post_process_optimized(session, exp_id, benchmark_start=None, phase_starts=
             WHERE experiment_id = :exp_id AND relative_time_ms IS NULL
         """), {"start": benchmark_start, "exp_id": exp_id})
         handlers_updated = result.rowcount
+        session.commit()
 
         # Lambda executions
         result = session.execute(text("""
@@ -656,14 +738,26 @@ def _post_process_optimized(session, exp_id, benchmark_start=None, phase_starts=
             WHERE experiment_id = :exp_id AND relative_time_ms IS NULL
         """), {"start": benchmark_start, "exp_id": exp_id})
         lambda_updated = result.rowcount
+        session.commit()
 
-        # RPC calls
-        result = session.execute(text("""
-            UPDATE rpc_calls
-            SET relative_time_ms = timestamp_ms - :start
-            WHERE experiment_id = :exp_id AND relative_time_ms IS NULL
-        """), {"start": benchmark_start, "exp_id": exp_id})
-        rpc_updated = result.rowcount
+        # RPC calls - batched to prevent PostgreSQL OOM on large experiments
+        RELATIVE_TIME_BATCH = 500000
+        rpc_updated = 0
+        while True:
+            result = session.execute(text("""
+                UPDATE rpc_calls
+                SET relative_time_ms = timestamp_ms - :start
+                WHERE id IN (
+                    SELECT id FROM rpc_calls
+                    WHERE experiment_id = :exp_id AND relative_time_ms IS NULL
+                    LIMIT :batch_size
+                )
+            """), {"start": benchmark_start, "exp_id": exp_id, "batch_size": RELATIVE_TIME_BATCH})
+            batch_count = result.rowcount
+            session.commit()
+            rpc_updated += batch_count
+            if batch_count < RELATIVE_TIME_BATCH:
+                break
 
         # Container starts
         result = session.execute(text("""
@@ -672,8 +766,8 @@ def _post_process_optimized(session, exp_id, benchmark_start=None, phase_starts=
             WHERE experiment_id = :exp_id AND relative_time_ms IS NULL
         """), {"start": benchmark_start, "exp_id": exp_id})
         container_updated = result.rowcount
-
         session.commit()
+
         print(f"      Updated requests={requests_updated:,}, handlers={handlers_updated:,}, lambda={lambda_updated:,}, rpc={rpc_updated:,}, containers={container_updated:,} ({time.time() - step_start:.1f}s)", flush=True)
 
         # Calculate phase_relative_time_ms for requests
@@ -706,17 +800,25 @@ def _post_process_optimized(session, exp_id, benchmark_start=None, phase_starts=
         print(f"    Enriching handler_events from requests...", flush=True)
         step_start = time.time()
 
+        # Single UPDATE using DISTINCT ON to deduplicate requests by context_id.
+        # context_id is a session ID shared by many requests, so a direct join
+        # produces a many-to-many explosion (N rpc_calls × M requests per session).
         result = session.execute(text("""
             UPDATE handler_events h
             SET phase_index = r.phase_index,
                 phase_name = r.phase_name,
                 auth_type = r.auth_type
-            FROM requests r
+            FROM (
+                SELECT DISTINCT ON (context_id) context_id, phase_index, phase_name, auth_type
+                FROM requests
+                WHERE experiment_id = :exp_id
+                  AND context_id IS NOT NULL
+                ORDER BY context_id
+            ) r
             WHERE h.experiment_id = :exp_id
-              AND r.experiment_id = :exp_id
-              AND h.context_id = r.context_id
               AND h.context_id IS NOT NULL
               AND h.phase_index IS NULL
+              AND h.context_id = r.context_id
         """), {"exp_id": exp_id})
         handler_enriched = result.rowcount
         session.commit()
@@ -752,17 +854,25 @@ def _post_process_optimized(session, exp_id, benchmark_start=None, phase_starts=
         print(f"    Enriching rpc_calls from requests...", flush=True)
         step_start = time.time()
 
+        # Single UPDATE using DISTINCT ON to deduplicate requests by context_id.
+        # context_id is a session ID shared by many requests, so a direct join
+        # produces a many-to-many explosion (N rpc_calls × M requests per session).
         result = session.execute(text("""
             UPDATE rpc_calls rc
             SET phase_index = r.phase_index,
                 phase_name = r.phase_name,
                 auth_type = r.auth_type
-            FROM requests r
+            FROM (
+                SELECT DISTINCT ON (context_id) context_id, phase_index, phase_name, auth_type
+                FROM requests
+                WHERE experiment_id = :exp_id
+                  AND context_id IS NOT NULL
+                ORDER BY context_id
+            ) r
             WHERE rc.experiment_id = :exp_id
-              AND r.experiment_id = :exp_id
-              AND rc.context_id = r.context_id
               AND rc.context_id IS NOT NULL
               AND rc.phase_index IS NULL
+              AND rc.context_id = r.context_id
         """), {"exp_id": exp_id})
         rpc_enriched = result.rowcount
         session.commit()
@@ -922,6 +1032,11 @@ def import_experiment(
         cpu_units=int(cpu_in_vcpu * 1024) if cpu_in_vcpu else None,
         password_hash_algorithm=hardware_config.password_hash_algorithm if hardware_config else None,
         jwt_sign_algorithm=hardware_config.jwt_sign_algorithm if hardware_config else None,
+        with_cloudfront=(
+            dir_meta.with_cloudfront
+            or (hardware_config.with_cloudfront if hardware_config else False)
+            or dir_meta.auth_strategy in ('edge', 'edge-selective')
+        ),
         http_timeout_seconds=http_timeout,
         start_timestamp_ms=start_time.timestamp_ms if start_time else None,
         error_description=error_desc,
@@ -1074,8 +1189,6 @@ def import_experiment(
                     'http_2xx_count': m.http_2xx_count,
                     'http_4xx_count': m.http_4xx_count,
                     'http_5xx_count': m.http_5xx_count,
-                    'active_connections': m.active_connections,
-                    'healthy_hosts': m.healthy_hosts,
                 }
                 for m in alb_metrics
             ]
@@ -1392,6 +1505,105 @@ def import_experiment(
         if total_rpc > 0:
             print(f"    RPC calls: {total_rpc:,}")
 
+    # Import edge Lambda log (Lambda@Edge REPORT lines + BEFAAS-EDGE events).
+    # Only present for edge / edge-selective experiments. BEFAAS-EDGE events
+    # are only populated for experiments using the v2 (runtime-JWKS-fetch)
+    # variant of the edge Lambda; v1 experiments yield REPORT lines only.
+    edge_log_path = experiment_dir / "logs" / "edge.log"
+    if edge_log_path.exists():
+        print(f"  Parsing edge.log...")
+        phase_name_by_index = {}
+        try:
+            _phases_for_edge = locals().get('phases_data') or []
+            for p in _phases_for_edge:
+                phase_name_by_index[p.phase_index] = p.phase_name
+        except Exception:
+            phase_name_by_index = {}
+
+        edge_lambda_buffer = []
+        edge_event_buffer = []
+        total_edge_lambda = 0
+        total_edge_events = 0
+        edge_records_since_commit = 0
+        edge_start = time.time()
+
+        def flush_edge_buffers(force_commit=False):
+            nonlocal edge_lambda_buffer, edge_event_buffer
+            nonlocal total_edge_lambda, total_edge_events
+            nonlocal edge_records_since_commit
+
+            batch_total = len(edge_lambda_buffer) + len(edge_event_buffer)
+            if batch_total == 0:
+                return
+
+            should_commit = force_commit or (
+                COMMIT_EVERY_N_RECORDS > 0 and
+                edge_records_since_commit + batch_total >= COMMIT_EVERY_N_RECORDS
+            )
+
+            if USE_COPY_INSERT:
+                if edge_lambda_buffer:
+                    _copy_insert(session, 'lambda_executions', edge_lambda_buffer,
+                                 TABLE_COLUMNS['lambda_executions'])
+                    total_edge_lambda += len(edge_lambda_buffer)
+                    edge_lambda_buffer = []
+                if edge_event_buffer:
+                    _copy_insert(session, 'edge_auth_events', edge_event_buffer,
+                                 TABLE_COLUMNS['edge_auth_events'])
+                    total_edge_events += len(edge_event_buffer)
+                    edge_event_buffer = []
+            else:
+                if edge_lambda_buffer:
+                    _batch_insert(session, LambdaExecution, edge_lambda_buffer)
+                    total_edge_lambda += len(edge_lambda_buffer)
+                    edge_lambda_buffer = []
+                if edge_event_buffer:
+                    _batch_insert(session, EdgeAuthEvent, edge_event_buffer)
+                    total_edge_events += len(edge_event_buffer)
+                    edge_event_buffer = []
+
+            if should_commit:
+                session.commit()
+                edge_records_since_commit = 0
+            else:
+                edge_records_since_commit += batch_total
+
+            if FLUSH_DELAY_SECONDS > 0:
+                time.sleep(FLUSH_DELAY_SECONDS)
+
+        for batch in parse_edge_log(edge_log_path, batch_size=batch_size):
+            if batch.lambda_executions:
+                for record in _create_lambda_execution_records(
+                    batch.lambda_executions, exp_id,
+                    benchmark_start=benchmark_start_ms
+                ):
+                    edge_lambda_buffer.append(record)
+
+            if batch.edge_auth_events:
+                for record in _create_edge_auth_event_records(
+                    batch.edge_auth_events, exp_id,
+                    benchmark_start=benchmark_start_ms,
+                    phase_starts=phase_starts,
+                    phase_name_by_index=phase_name_by_index,
+                ):
+                    edge_event_buffer.append(record)
+
+            if len(edge_lambda_buffer) + len(edge_event_buffer) >= COPY_BATCH_SIZE:
+                flush_edge_buffers()
+
+        flush_edge_buffers(force_commit=True)
+
+        edge_elapsed = time.time() - edge_start
+        edge_total = total_edge_lambda + total_edge_events
+        edge_rate = edge_total / edge_elapsed if edge_elapsed > 0 else 0
+        print(f"  Inserted {edge_total:,} events from edge.log in {edge_elapsed:.1f}s ({edge_rate:,.0f}/s)")
+        if total_edge_lambda > 0:
+            print(f"    Edge Lambda executions: {total_edge_lambda:,}")
+        if total_edge_events > 0:
+            print(f"    Edge auth events: {total_edge_events:,}")
+        elif total_edge_lambda > 0:
+            print(f"    (No BEFAAS-EDGE events — experiment uses v1 legacy edge Lambda or older instrumentation)")
+
     # Note: Data has been committed during import, no need for additional flush
 
     if skip_post_processing:
@@ -1529,19 +1741,26 @@ def _run_post_processing(session: Session, exp_id: int, experiment, phase_starts
         # Enrich rpc_calls with phase/auth info from requests (via context_id join)
         # NOTE: We join on context_id (not x_pair) because internal RPC calls have x_pairs
         # that are generated call_x_pairs which don't exist in the requests table.
-        session.execute(text("""
+        # Batched to avoid connection timeouts on large datasets.
+        result = session.execute(text("""
             UPDATE rpc_calls rc
             SET phase_index = r.phase_index,
                 phase_name = r.phase_name,
                 auth_type = r.auth_type
-            FROM requests r
+            FROM (
+                SELECT DISTINCT ON (context_id) context_id, phase_index, phase_name, auth_type
+                FROM requests
+                WHERE experiment_id = :exp_id
+                  AND context_id IS NOT NULL
+                ORDER BY context_id
+            ) r
             WHERE rc.experiment_id = :exp_id
-              AND r.experiment_id = :exp_id
-              AND rc.context_id = r.context_id
               AND rc.context_id IS NOT NULL
               AND rc.phase_index IS NULL
+              AND rc.context_id = r.context_id
         """), {"exp_id": exp_id})
-        print(f"    Enriched rpc_calls with phase/auth info from requests")
+        session.commit()
+        print(f"    Enriched {result.rowcount:,} rpc_calls with phase/auth info from requests")
 
         # Calculate is_protected_endpoint based on route patterns
         # Protected endpoints typically require auth (non-login/register routes under /api/)

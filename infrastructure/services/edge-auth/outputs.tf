@@ -40,3 +40,8 @@ output "project_name" {
   description = "Project name used for resource naming (needed for edge-auth reuse)"
   value       = var.project_name
 }
+
+output "selective_edge_routing" {
+  description = "Whether selective edge routing is enabled (only protected paths use Lambda@Edge)"
+  value       = var.selective_edge_routing
+}

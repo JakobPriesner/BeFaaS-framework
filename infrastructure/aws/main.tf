@@ -1,3 +1,14 @@
+terraform {
+  required_version = ">= 1.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
 data "terraform_remote_state" "exp" {
   backend = "local"
 
@@ -14,8 +25,6 @@ locals {
   fns           = data.terraform_remote_state.exp.outputs.aws_fns
   fns_async     = data.terraform_remote_state.exp.outputs.aws_fns_async
 
-  # Build a map of function names for direct Lambda invocation
-  # Format: LAMBDA_FN_FUNCTIONNAME = full-function-name
   lambda_fn_env_vars = {
     for key, _ in data.terraform_remote_state.exp.outputs.aws_fns :
     "LAMBDA_FN_${upper(key)}" => "${local.project_name}-${key}"
@@ -116,7 +125,6 @@ resource "aws_lambda_function" "fn" {
 
   role = aws_iam_role.lambda_exec.arn
 
-  # Use custom log group per experiment run
   logging_config {
     log_format = "Text"
     log_group  = aws_cloudwatch_log_group.lambda_logs[each.key].name
@@ -130,12 +138,9 @@ resource "aws_lambda_function" "fn" {
         COGNITO_USER_POOL_ID = local.cognito_user_pool_id
         COGNITO_CLIENT_ID    = local.cognito_client_id
       },
-      # Add all Lambda function names for direct invocation (bypasses API Gateway)
       local.lambda_fn_env_vars,
       var.fn_env,
-      # Add edge public key if configured
       var.edge_public_key != "" ? { EDGE_PUBLIC_KEY = var.edge_public_key } : {},
-      # Add JWT signing keys for service-integrated-manual auth
       var.jwt_private_key != "" ? { JWT_PRIVATE_KEY = var.jwt_private_key } : {},
       var.jwt_public_key != "" ? { JWT_PUBLIC_KEY = var.jwt_public_key } : {}
     )

@@ -10,6 +10,7 @@ from .config import parse_hardware_config, parse_benchmark_config, parse_experim
 from .pricing import parse_pricing
 from .artillery import parse_artillery_log
 from .aws_logs import parse_aws_log
+from .edge_logs import parse_edge_log
 from .cloudwatch import parse_alb_metrics, parse_ecs_metrics
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "parse_pricing",
     "parse_artillery_log",
     "parse_aws_log",
+    "parse_edge_log",
     "parse_alb_metrics",
     "parse_ecs_metrics",
 ]

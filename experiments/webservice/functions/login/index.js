@@ -55,6 +55,7 @@ async function handle(event, ctx) {
     const response = await cognitoClient.send(command)
 
     return {
+      success: true,
       accessToken: response.AuthenticationResult.AccessToken,
       idToken: response.AuthenticationResult.IdToken,
       refreshToken: response.AuthenticationResult.RefreshToken

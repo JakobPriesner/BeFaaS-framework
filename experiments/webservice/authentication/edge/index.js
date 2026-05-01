@@ -1,34 +1,23 @@
-/**
- * Edge-based Authentication - Internal Token Validator
- *
- * Validates internal JWT tokens that have been transformed by Lambda@Edge.
- * Uses Ed25519 signature verification for high performance.
- */
 
 const { performance } = require('perf_hooks');
 const crypto = require('crypto');
 
-// Configuration
 const INTERNAL_ISSUER = 'edge-auth-service';
 const INTERNAL_AUDIENCE = 'internal-services';
 const MAX_CLOCK_SKEW_SECONDS = 5;
 
-// Environment variables
 const EDGE_PUBLIC_KEY = process.env.EDGE_PUBLIC_KEY;
+const CLOUDFRONT_SECRET = process.env.CLOUDFRONT_SECRET || null;
 const fnName = process.env.BEFAAS_FN_NAME || 'unknownFn';
 const deploymentId = process.env.BEFAAS_DEPLOYMENT_ID || 'unknownDeploymentId';
 
-// Request ID cache for replay prevention (LRU with TTL)
 const requestIdCache = new Map();
-const REQUEST_ID_CACHE_TTL_MS = 120000; // 2 minutes
+const REQUEST_ID_CACHE_TTL_MS = 120000; // = 2 minutes
 const MAX_CACHE_SIZE = 10000;
-const CLEANUP_INTERVAL = 100; // Only run cleanup every N requests
+const CLEANUP_INTERVAL = 100;
 let requestsSinceCleanup = 0;
 
-/**
- * Log auth timing in BEFAAS format
- */
-function logAuthTiming(contextId, xPair, durationMs, success) {
+function logAuthTiming (contextId, xPair, durationMs, success) {
   console.log(
     'BEFAAS' +
       JSON.stringify({
@@ -49,24 +38,16 @@ function logAuthTiming(contextId, xPair, durationMs, success) {
   );
 }
 
-/**
- * Base64URL decode
- */
-function base64UrlDecode(str) {
-  // Add padding if needed
+function base64UrlDecode (str) {
   const pad = str.length % 4;
   if (pad) {
     str += '='.repeat(4 - pad);
   }
-  // Convert base64url to base64
   str = str.replace(/-/g, '+').replace(/_/g, '/');
   return Buffer.from(str, 'base64');
 }
 
-/**
- * Clean expired entries from request ID cache
- */
-function cleanRequestIdCache() {
+function cleanRequestIdCache () {
   const now = Date.now();
   for (const [id, timestamp] of requestIdCache.entries()) {
     if (now - timestamp > REQUEST_ID_CACHE_TTL_MS) {
@@ -85,10 +66,7 @@ function cleanRequestIdCache() {
   }
 }
 
-/**
- * Check for replay attack using request_id
- */
-function checkReplayPrevention(requestId) {
+function checkReplayPrevention (requestId) {
   // Only run expensive cleanup periodically or when cache is near capacity
   requestsSinceCleanup++;
   if (requestsSinceCleanup >= CLEANUP_INTERVAL || requestIdCache.size > MAX_CACHE_SIZE * 0.8) {
@@ -96,23 +74,17 @@ function checkReplayPrevention(requestId) {
     requestsSinceCleanup = 0;
   }
 
-  // Check if request_id already used
   if (requestIdCache.has(requestId)) {
     return false; // Replay detected
   }
 
-  // Store request_id
   requestIdCache.set(requestId, Date.now());
   return true;
 }
 
-// Cache the Ed25519 public key (imported once)
 let cachedPublicKey = null;
 
-/**
- * Verify Ed25519 signature using Node.js crypto
- */
-function verifyEd25519Signature(publicKeyBase64, message, signatureBase64url) {
+function verifyEd25519Signature (publicKeyBase64, message, signatureBase64url) {
   try {
     if (!cachedPublicKey) {
       const publicKeyDer = Buffer.from(publicKeyBase64, 'base64');
@@ -125,9 +97,8 @@ function verifyEd25519Signature(publicKeyBase64, message, signatureBase64url) {
 
     const signature = base64UrlDecode(signatureBase64url);
 
-    // Verify signature
     return crypto.verify(
-      null, // Ed25519 doesn't use a separate hash algorithm
+      null,
       Buffer.from(message),
       cachedPublicKey,
       signature
@@ -138,21 +109,12 @@ function verifyEd25519Signature(publicKeyBase64, message, signatureBase64url) {
   }
 }
 
-/**
- * Verify internal JWT token from edge
- *
- * @param {Object} event - The request event containing headers
- * @param {string} contextId - Context ID for logging
- * @param {string} xPair - X-Pair for call graph tracking
- * @returns {Object|boolean} - Token payload if valid, false otherwise
- */
-async function verifyJWT(event, contextId, xPair) {
+async function verifyJWT (event, contextId, xPair) {
   const startTime = performance.now();
   const logContextId = contextId || 'unknown';
   const logXPair = xPair || 'unknown';
 
   try {
-    // Check if public key is configured
     if (!EDGE_PUBLIC_KEY) {
       console.error('EDGE_PUBLIC_KEY environment variable not set');
       const duration = performance.now() - startTime;
@@ -170,7 +132,6 @@ async function verifyJWT(event, contextId, xPair) {
 
     const token = authHeader.replace(/^Bearer\s+/i, '');
 
-    // Parse JWT without verification first
     const parts = token.split('.');
     if (parts.length !== 3) {
       throw new Error('Invalid JWT format');
@@ -186,34 +147,30 @@ async function verifyJWT(event, contextId, xPair) {
       throw new Error('Invalid JWT encoding');
     }
 
-    // Verify algorithm is EdDSA
     if (header.alg !== 'EdDSA') {
       throw new Error(`Invalid algorithm: expected EdDSA, got ${header.alg}`);
     }
 
-    // Verify issuer
     if (payload.iss !== INTERNAL_ISSUER) {
       throw new Error(`Invalid issuer: expected ${INTERNAL_ISSUER}, got ${payload.iss}`);
     }
 
-    // Verify audience
     if (payload.aud !== INTERNAL_AUDIENCE) {
       throw new Error(`Invalid audience: expected ${INTERNAL_AUDIENCE}, got ${payload.aud}`);
     }
 
-    // Verify expiration (with clock skew tolerance)
+    // Verify expiration
     const now = Math.floor(Date.now() / 1000);
     if (payload.exp < now - MAX_CLOCK_SKEW_SECONDS) {
       throw new Error('Token expired');
     }
 
-    // Verify not issued in the future (with clock skew tolerance)
+    // Verify not issued in the future
     if (payload.iat && payload.iat > now + MAX_CLOCK_SKEW_SECONDS) {
       throw new Error('Token issued in the future');
     }
 
     // Verify Ed25519 signature BEFORE consuming replay cache
-    // This prevents attackers from burning legitimate request IDs with forged tokens
     const signingInput = `${headerB64}.${payloadB64}`;
     const isValid = verifyEd25519Signature(EDGE_PUBLIC_KEY, signingInput, signatureB64);
 
@@ -221,13 +178,20 @@ async function verifyJWT(event, contextId, xPair) {
       throw new Error('Invalid signature');
     }
 
-    // Check for replay attack using request_id (only after signature is verified)
     if (!payload.request_id) {
       throw new Error('Missing request_id claim');
     }
 
     if (!checkReplayPrevention(payload.request_id)) {
       throw new Error('Replay attack detected: request_id already used');
+    }
+
+    // Verify CloudFront origin secret (prevents API Gateway bypass)
+    if (CLOUDFRONT_SECRET) {
+      const cfSecret = event.headers?.['x-cloudfront-secret'] || event.headers?.['X-CloudFront-Secret'];
+      if (cfSecret && cfSecret !== CLOUDFRONT_SECRET) {
+        throw new Error('Invalid CloudFront origin secret');
+      }
     }
 
     const duration = performance.now() - startTime;

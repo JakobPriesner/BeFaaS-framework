@@ -1,31 +1,12 @@
-const { argon2id } = require('hash-wasm')
+const argon2 = require('argon2')
 
-// Argon2id parameters (tuned for Lambda: limited CPU, moderate memory)
-const ARGON2_MEMORY = 65536  // 64 MB
+const ARGON2_MEMORY = 65536  // 64 MiB
 const ARGON2_ITERATIONS = 3
 const ARGON2_PARALLELISM = 1
 const ARGON2_HASH_LENGTH = 32
+const ARGON2_SALT_LENGTH = 16
 
-/**
- * Register Service for 'service-integrated-manual' auth mode.
- * Stores user in Redis with argon2id-hashed password.
- *
- * Ex Payload Body: {
- *   "userName": "testuser",
- *   "password": "TestPassword123!"
- * }
- *
- * Response on success: {
- *   "success": true,
- *   "message": "User registered successfully"
- * }
- *
- * Response on failure: {
- *   "success": false,
- *   "error": "..."
- * }
- */
-async function handle(event, ctx) {
+async function handle (event, ctx) {
   const { userName, password } = event
 
   if (!userName || !password) {
@@ -40,18 +21,13 @@ async function handle(event, ctx) {
     return { success: false, error: 'Username already exists' }
   }
 
-  // Hash the password with argon2id
-  const salt = new Uint8Array(16)
-  require('crypto').randomFillSync(salt)
-
-  const passwordHash = await argon2id({
-    password,
-    salt,
+  const passwordHash = await argon2.hash(password, {
+    type: argon2.argon2id,
     parallelism: ARGON2_PARALLELISM,
-    iterations: ARGON2_ITERATIONS,
-    memorySize: ARGON2_MEMORY,
+    timeCost: ARGON2_ITERATIONS,
+    memoryCost: ARGON2_MEMORY,
     hashLength: ARGON2_HASH_LENGTH,
-    outputType: 'encoded'
+    saltLength: ARGON2_SALT_LENGTH
   })
 
   // Store user in Redis with hashed password

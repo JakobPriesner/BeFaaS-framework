@@ -86,13 +86,21 @@ output "scaling_config" {
       memory_mb    = var.memory
       min_capacity = var.min_capacity
       max_capacity = var.max_capacity
-      scaling_rules = {
-        request_count = {
-          target_value          = var.target_request_count
-          scale_in_cooldown_sec = var.scale_in_cooldown
-          scale_out_cooldown_sec = var.scale_out_cooldown
-        }
-      }
+      scaling_rules = (
+        var.scaling_mode == "request_count" ? {
+          request_count = {
+            target_value           = var.target_request_count
+            scale_in_cooldown_sec  = var.scale_in_cooldown
+            scale_out_cooldown_sec = var.scale_out_cooldown
+          }
+        } : var.scaling_mode == "latency" ? {
+          latency = {
+            target_value           = var.target_response_time
+            scale_in_cooldown_sec  = var.scale_in_cooldown
+            scale_out_cooldown_sec = var.scale_out_cooldown
+          }
+        } : {}
+      )
     }
   }
 }

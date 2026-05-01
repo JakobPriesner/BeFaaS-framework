@@ -2,7 +2,6 @@ const express = require('express')
 const Redis = require('ioredis')
 const { configureBeFaaSLib, lib, callService } = require('./shared/libConfig')
 
-// Import handler functions
 const getCart = require('./functions/getcart')
 const addCartItem = require('./functions/addcartitem')
 const emptyCart = require('./functions/emptycart')
@@ -11,14 +10,12 @@ const cartKvStorage = require('./functions/cartkvstorage')
 const app = express()
 app.use(express.json())
 
-// Configure microservices
 const { namespace } = configureBeFaaSLib()
 
-// Initialize Redis connection for cart storage
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379'
 let redis = null
 
-function initRedis() {
+function initRedis () {
   try {
     redis = new Redis(redisUrl, {
       retryDelayOnFailover: 100,
@@ -45,17 +42,16 @@ function initRedis() {
 
 initRedis()
 
-// Create context object with db access for cart operations
-// @param {string|null} authHeader - Optional Authorization header to propagate
-function createContext(authHeader = null) {
+function createContext (authHeader = null, contextId = null, xPair = null) {
   const ctx = {
+    contextId,
+    xPair,
     call: async (functionName, event) => {
       // Include auth header in event for verifyJWT
       const eventWithHeaders = authHeader
         ? { ...event, headers: { authorization: authHeader } }
         : event
 
-      // Route internal cart-service calls in-process
       if (functionName === 'cartkvstorage') {
         return await cartKvStorage(eventWithHeaders, createContext(authHeader))
       }
@@ -68,7 +64,6 @@ function createContext(authHeader = null) {
       if (functionName === 'emptycart') {
         return await emptyCart(eventWithHeaders, createContext(authHeader))
       }
-      // External service calls go through HTTP
       return await callService(functionName, event, authHeader)
     },
     db: {
@@ -99,19 +94,17 @@ function createContext(authHeader = null) {
   return ctx
 }
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'cart-service' })
 })
 
-// Cart Service Routes
 app.post('/getcart', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
-    const ctx = createContext(authHeader)
     const event = authHeader
       ? { ...req.body, headers: { authorization: authHeader } }
       : req.body
+    const ctx = createContext(authHeader, req.headers['x-context'], req.headers['x-pair'])
     const result = await getCart(event, ctx)
     res.json(result)
   } catch (error) {
@@ -123,10 +116,10 @@ app.post('/getcart', async (req, res) => {
 app.post('/addcartitem', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
-    const ctx = createContext(authHeader)
     const event = authHeader
       ? { ...req.body, headers: { authorization: authHeader } }
       : req.body
+    const ctx = createContext(authHeader, req.headers['x-context'], req.headers['x-pair'])
     const result = await addCartItem(event, ctx)
     res.json(result)
   } catch (error) {
@@ -138,10 +131,10 @@ app.post('/addcartitem', async (req, res) => {
 app.post('/emptycart', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
-    const ctx = createContext(authHeader)
     const event = authHeader
       ? { ...req.body, headers: { authorization: authHeader } }
       : req.body
+    const ctx = createContext(authHeader, req.headers['x-context'], req.headers['x-pair'])
     const result = await emptyCart(event, ctx)
     res.json(result)
   } catch (error) {
@@ -153,10 +146,10 @@ app.post('/emptycart', async (req, res) => {
 app.post('/cartkvstorage', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
-    const ctx = createContext(authHeader)
     const event = authHeader
       ? { ...req.body, headers: { authorization: authHeader } }
       : req.body
+    const ctx = createContext(authHeader, req.headers['x-context'], req.headers['x-pair'])
     const result = await cartKvStorage(event, ctx)
     res.json(result)
   } catch (error) {
@@ -167,14 +160,12 @@ app.post('/cartkvstorage', async (req, res) => {
 
 const port = process.env.PORT || 3002
 
-// Start server (ECS handles service registration automatically)
 app.listen(port, () => {
   console.log(`Cart Service listening on port ${port}`)
   console.log(`Connected to Redis at ${process.env.REDIS_URL || 'redis://localhost:6379'}`)
   console.log(`Using Cloud Map namespace: ${namespace}`)
 })
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM signal received: closing HTTP server')
   await lib.shutdown()

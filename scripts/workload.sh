@@ -188,10 +188,12 @@ echo "Deploying workload..." | chalk blue
 cd infrastructure/services/workload
 terraform init
 
-# Pass auth_mode from environment variable (default: none)
+# Pass auth_mode and algorithm from environment variables
 auth_mode="${AUTH_MODE:-none}"
+algorithm="${ALGORITHM:-argon2id-eddsa}"
 echo "Auth mode: $auth_mode" | chalk blue
-terraform apply -auto-approve -var="auth_mode=$auth_mode" | tee ../../../artillery/workload-deploy.log
+echo "Algorithm: $algorithm" | chalk blue
+terraform apply -auto-approve -var="auth_mode=$auth_mode" -var="algorithm=$algorithm" | tee ../../../artillery/workload-deploy.log
 
 # Wait for in-flight requests to complete (important for high-latency architectures)
 drain_timeout="${DRAIN_TIMEOUT:-30}"

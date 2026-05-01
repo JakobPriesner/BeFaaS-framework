@@ -1,11 +1,3 @@
-/**
- * Edge-based Authentication - Register Handler
- *
- * Registers users via AWS Cognito.
- * Note: This handler does NOT create users directly - the benchmark
- * pre-registers users before running. This handler is for manual testing
- * or scenarios where new users need to be created during the experiment.
- */
 
 const {
   CognitoIdentityProviderClient,
@@ -25,10 +17,7 @@ const cognitoClient = new CognitoIdentityProviderClient({
   region: AWS_REGION
 });
 
-/**
- * Log auth timing in BEFAAS format
- */
-function logAuthTiming(contextId, durationMs, success) {
+function logAuthTiming (contextId, durationMs, success) {
   console.log(
     'BEFAAS' +
       JSON.stringify({
@@ -46,18 +35,10 @@ function logAuthTiming(contextId, durationMs, success) {
           }
         }
       })
-  );
+  )
 }
 
-/**
- * Register handler for edge auth mode.
- * Creates a new user in Cognito and auto-confirms them.
- *
- * @param {Object} event - Request event with userName, password, email
- * @param {Object} ctx - Context object
- * @returns {Object} - Registration result
- */
-async function handle(event, ctx) {
+async function handle (event, ctx) {
   const startTime = performance.now();
   const contextId = ctx?.contextId || 'unknown';
 
@@ -79,7 +60,6 @@ async function handle(event, ctx) {
   }
 
   try {
-    // Sign up the user
     const signUpCommand = new SignUpCommand({
       ClientId: COGNITO_CLIENT_ID,
       Username: userName,
@@ -89,7 +69,7 @@ async function handle(event, ctx) {
 
     await cognitoClient.send(signUpCommand);
 
-    // Auto-confirm the user (for testing purposes)
+    // Auto-confirm the user (since this is an automated benchmark without mail functionalities or so)
     const confirmCommand = new AdminConfirmSignUpCommand({
       UserPoolId: COGNITO_USER_POOL_ID,
       Username: userName
@@ -110,7 +90,6 @@ async function handle(event, ctx) {
 
     const errorMsg = error.message || String(error);
 
-    // Handle specific Cognito errors
     if (error.name === 'UsernameExistsException') {
       return { success: false, error: 'User already exists' };
     }
@@ -119,7 +98,6 @@ async function handle(event, ctx) {
       return { success: false, error: 'Invalid password format' };
     }
 
-    // Handle timeout errors
     if (errorMsg.includes('time-out') || errorMsg.includes('timeout') || errorMsg.includes('ETIMEDOUT')) {
       console.error('Cognito register timeout:', error);
       return {

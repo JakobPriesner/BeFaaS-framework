@@ -1,20 +1,3 @@
-"""
-Command-line interface for BeFaaS benchmark database import.
-
-Usage:
-    python -m db_import init [--drop]
-    python -m db_import import <directory> [--force]
-    python -m db_import import-all <results_dir> [--force]
-    python -m db_import dry-run <directory>       # Test parsing without database
-    python -m db_import dry-run-all <results_dir> # Test all experiments
-    python -m db_import list
-    python -m db_import delete <experiment_id>
-    python -m db_import stats
-    python -m db_import schema-info               # Print schema documentation
-
-Database configuration is read from db_import/config.py.
-"""
-
 import argparse
 import sys
 from pathlib import Path
@@ -26,9 +9,9 @@ from sqlalchemy.orm import Session
 from .schema import (
     Base, Experiment, Request, LambdaExecution, HandlerEvent,
     ContainerStart, RpcCall, Pricing, PricingComponent,
-    MetricsEcs, MetricsAlb, Phase, ScalingRule, get_schema_documentation
+    MetricsEcs, MetricsAlb, Phase, ScalingRule, get_schema_documentation,
 )
-from .importer import import_experiment, import_all_experiments, init_database, backfill_nulls
+from .importer import import_experiment, import_all_experiments, init_database, backfill_nulls, _run_post_processing, _calculate_phase_starts
 from .parsers import (
     parse_directory_name,
     parse_hardware_config,
@@ -50,30 +33,19 @@ def get_database_url() -> str:
 
 
 def create_db_engine(url: str, echo: bool = False):
-    """
-    Create SQLAlchemy engine with proper connection pool configuration.
-
-    This prevents connection exhaustion and stale connection issues during
-    large imports by:
-    - Limiting pool size to prevent overwhelming the database
-    - Using pool_pre_ping to detect and replace stale connections
-    - Setting pool_recycle to prevent long-lived connections from going stale
-    - Using max_overflow to allow burst capacity while limiting total connections
-    """
     return create_engine(
         url,
         echo=echo,
         poolclass=QueuePool,
-        pool_size=5,          # Base number of connections to keep open
-        max_overflow=10,      # Allow up to 15 total connections (5 + 10)
-        pool_pre_ping=True,   # Test connections before using (detects stale connections)
-        pool_recycle=1800,    # Recycle connections after 30 minutes
-        pool_timeout=30,      # Wait max 30 seconds for a connection from the pool
+        pool_size=5,
+        max_overflow=10,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        pool_timeout=30,
     )
 
 
 def cmd_init(args):
-    """Initialize database schema."""
     url = get_database_url()
     print(f"Database: {url.split('@')[-1] if '@' in url else url}")
 
@@ -82,7 +54,6 @@ def cmd_init(args):
 
 
 def cmd_import(args):
-    """Import a single experiment."""
     url = get_database_url()
     print(f"Database: {url.split('@')[-1] if '@' in url else url}")
 
@@ -101,7 +72,6 @@ def cmd_import(args):
 
 
 def cmd_import_all(args):
-    """Import all experiments from a directory."""
     url = get_database_url()
     print(f"Database: {url.split('@')[-1] if '@' in url else url}")
 
@@ -119,7 +89,6 @@ def cmd_import_all(args):
 
 
 def cmd_list(args):
-    """List all experiments in the database."""
     url = get_database_url()
     engine = create_db_engine(url, echo=args.verbose)
 
@@ -142,7 +111,6 @@ def cmd_list(args):
 
 
 def cmd_delete(args):
-    """Delete an experiment by ID."""
     url = get_database_url()
     engine = create_db_engine(url, echo=args.verbose)
 
@@ -164,7 +132,6 @@ def cmd_delete(args):
 
 
 def cmd_stats(args):
-    """Show database statistics."""
     url = get_database_url()
     engine = create_db_engine(url, echo=args.verbose)
 
@@ -210,7 +177,6 @@ def cmd_stats(args):
 
 
 def cmd_query(args):
-    """Run a SQL query and display results."""
     url = get_database_url()
     engine = create_db_engine(url, echo=args.verbose)
 
@@ -229,7 +195,6 @@ def cmd_query(args):
 
 
 def cmd_schema_info(args):
-    """Print schema documentation."""
     print(get_schema_documentation())
 
 
@@ -431,6 +396,39 @@ def dry_run_experiment(experiment_dir: Path) -> dict:
     print(f"  TOTAL: {total:,} records")
 
     return stats
+
+
+def cmd_post_process(args):
+    """Run post-processing for specific experiment IDs."""
+    url = get_database_url()
+    print(f"Database: {url.split('@')[-1] if '@' in url else url}")
+
+    engine = create_db_engine(url, echo=args.verbose)
+
+    with Session(engine) as session:
+        exp_ids = args.experiment_ids
+
+        print(f"\n=== Post-processing {len(exp_ids)} experiments ===")
+        for i, exp_id in enumerate(exp_ids, 1):
+            print(f"\n[{i}/{len(exp_ids)}] Post-processing experiment {exp_id}...")
+            experiment = session.execute(
+                select(Experiment).where(Experiment.id == exp_id)
+            ).scalar_one_or_none()
+
+            if not experiment:
+                print(f"  Experiment {exp_id} not found, skipping")
+                continue
+
+            # Reconstruct phase_starts from the phases table
+            phases = session.execute(
+                select(Phase).where(Phase.experiment_id == exp_id).order_by(Phase.phase_index)
+            ).scalars().all()
+            phase_starts = _calculate_phase_starts(phases) if phases else {}
+
+            _run_post_processing(session, exp_id, experiment, phase_starts)
+            session.commit()
+
+        print(f"\nPost-processing complete for {len(exp_ids)} experiments")
 
 
 def cmd_backfill(args):
@@ -642,6 +640,18 @@ def main():
         help="Print schema documentation for AI/human reference"
     )
 
+    # post-process command
+    pp_parser = subparsers.add_parser(
+        "post-process",
+        help="Run post-processing for specific experiment IDs (resume after crash)"
+    )
+    pp_parser.add_argument(
+        "experiment_ids",
+        type=int,
+        nargs="+",
+        help="Experiment IDs to post-process",
+    )
+
     # backfill command
     subparsers.add_parser(
         "backfill",
@@ -701,6 +711,7 @@ def main():
         "schema-info": cmd_schema_info,
         "dry-run": cmd_dry_run,
         "dry-run-all": cmd_dry_run_all,
+        "post-process": cmd_post_process,
         "backfill": cmd_backfill,
         "reset": cmd_reset,
     }

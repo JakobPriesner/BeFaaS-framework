@@ -1,23 +1,5 @@
-/**
- * Register Service for 'none' auth mode.
- * Stores user in Redis (like original BeFaaS benchmark) without Cognito.
- *
- * Ex Payload Body: {
- *   "userName": "testuser",
- *   "password": "TestPassword123!"
- * }
- *
- * Response on success: {
- *   "success": true,
- *   "message": "User registered successfully"
- * }
- *
- * Response on failure: {
- *   "success": false,
- *   "error": "..."
- * }
- */
-async function handle(event, ctx) {
+
+async function handle (event, ctx) {
   const { userName, password } = event
 
   if (!userName || !password) {

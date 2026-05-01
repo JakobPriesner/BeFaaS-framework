@@ -1,25 +1,5 @@
-/**
- * Login Service for 'none' auth mode.
- * Validates user against Redis (like original BeFaaS benchmark) without Cognito.
- *
- * Ex Payload Body: {
- *   "userName": "testuser",
- *   "password": "TestPassword123!"
- * }
- *
- * Response on success: {
- *   "success": true,
- *   "accessToken": "mock-access-token-<userName>",
- *   "idToken": "mock-id-token-<userName>",
- *   "refreshToken": "mock-refresh-token-<userName>"
- * }
- *
- * Response on failure: {
- *   "success": false,
- *   "error": "..."
- * }
- */
-async function handle(event, ctx) {
+
+async function handle (event, ctx) {
   const { userName, password } = event
 
   if (!userName || !password) {

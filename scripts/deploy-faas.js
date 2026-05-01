@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { createZip, installDependencies } = require('../experiments/webservice/architectures/shared/buildUtils');
-const { runTerraform, getTerraformOutputJson, getTerraformOutput } = require('./deploy-shared');
+const { runTerraform, getTerraformOutputJson, getTerraformOutput, getVpcIdFromState, cleanupVpcSecurityGroups, importOrphanedVpcResources, ensureCognitoDeployed } = require('./deploy-shared');
 
 /**
  * Deploy FaaS architecture using Terraform
@@ -72,6 +72,7 @@ async function deployFaaS(experiment, buildDir) {
       if (fs.existsSync(vpcDir)) {
         console.log('Setting up VPC...');
         runTerraform(vpcDir, 'init');
+        importOrphanedVpcResources(vpcDir);
         runTerraform(vpcDir, 'apply');
       }
 
@@ -94,6 +95,9 @@ async function deployFaaS(experiment, buildDir) {
     // Step 4: Prepare function environment variables
     const fnEnv = extractEndpoints(states);
     console.log('\nFunction environment variables:', fnEnv);
+
+    // Ensure persistent Cognito pool is deployed (required by provider Terraform configs)
+    ensureCognitoDeployed(projectRoot);
 
     // Step 5: Deploy functions to providers
     console.log('\nStep 4: Deploying functions to providers...');
@@ -154,6 +158,7 @@ async function destroyFaaS(experiment) {
   console.log(`Destroying FaaS infrastructure for experiment: ${experiment}`);
 
   const projectRoot = path.join(__dirname, '..');
+  const awsRegion = process.env.AWS_REGION || 'us-east-1';
   const experimentJsonPath = path.join(projectRoot, 'experiments', experiment, 'experiment.json');
 
   if (!fs.existsSync(experimentJsonPath)) {
@@ -210,6 +215,7 @@ async function destroyFaaS(experiment) {
 
     // Destroy VPC last (after services that depend on it)
     const vpcDir = path.join(projectRoot, 'infrastructure', 'services', 'vpc');
+    const vpcId = getVpcIdFromState(vpcDir);
     if (fs.existsSync(vpcDir)) {
       console.log('Destroying VPC...');
       try {
@@ -217,6 +223,10 @@ async function destroyFaaS(experiment) {
       } catch (error) {
         console.warn(`Warning: Failed to destroy VPC:`, error.message);
       }
+    }
+    // Cleanup any orphaned security groups that survived terraform destroy
+    if (vpcId) {
+      await cleanupVpcSecurityGroups(vpcId, awsRegion);
     }
   }
 
@@ -288,6 +298,20 @@ function prepareFunctionZips(projectRoot, experiment, buildDir, experimentConfig
       } catch (error) {
         console.warn(`  Warning: Failed to install dependencies for ${functionName}: ${error.message}`);
       }
+    }
+
+    // Silence @befaas/lib logging — the PerformanceObserver produces ~85% of all
+    // CloudWatch log volume (perf marks/measures for every request). Our own
+    // metrics.js already captures everything the analysis pipeline needs.
+    const befaasLogPath = path.join(functionDir, 'node_modules', '@befaas', 'lib', 'log.js');
+    if (fs.existsSync(befaasLogPath)) {
+      const silentLog = `const fnName = process.env.BEFAAS_FN_NAME || 'unknownFn'
+function log() {}
+module.exports = log
+module.exports.fnName = fnName
+`;
+      fs.writeFileSync(befaasLogPath, silentLog, 'utf8');
+      console.log(`  ✓ Silenced @befaas/lib logging for ${functionName}`);
     }
 
     // Create zip file

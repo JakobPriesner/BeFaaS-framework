@@ -35,3 +35,10 @@ __pycache__/
 # Environment files
 .env
 scripts/.env
+
+# EC2 batch runner state
+scripts/batch/.ec2-instance.json
+/scripts/results/
+/scripts/batch/
+*.hcl
+/scripts/plotting/

@@ -268,43 +268,6 @@ async function collectECSCloudWatchMetrics (config, outputDir, startTime, endTim
     Label: 'ALB HTTP 5XX Count'
   })
 
-  // Active Connection Count
-  metricQueries.push({
-    Id: `alb_connections_${queryId++}`,
-    MetricStat: {
-      Metric: {
-        Namespace: 'AWS/ApplicationELB',
-        MetricName: 'ActiveConnectionCount',
-        Dimensions: [
-          { Name: 'LoadBalancer', Value: albArnSuffix }
-        ]
-      },
-      Period: period,
-      Stat: 'Sum'
-    },
-    Label: 'ALB Active Connections'
-  })
-
-  // Target Group - Healthy Host Count
-  if (targetGroupArnSuffix) {
-    metricQueries.push({
-      Id: `tg_healthy_${queryId++}`,
-      MetricStat: {
-        Metric: {
-          Namespace: 'AWS/ApplicationELB',
-          MetricName: 'HealthyHostCount',
-          Dimensions: [
-            { Name: 'TargetGroup', Value: targetGroupArnSuffix },
-            { Name: 'LoadBalancer', Value: albArnSuffix }
-          ]
-        },
-        Period: period,
-        Stat: 'Average'
-      },
-      Label: 'Target Group Healthy Hosts'
-    })
-  }
-
   // Fetch metrics (CloudWatch allows max 500 metrics per request)
   console.log(`\nFetching ${metricQueries.length} metric series...`)
 

@@ -4,12 +4,37 @@ const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { logSection } = require('./utils');
 
-async function runDeploy(experiment, architecture, buildDir, authMethod, algorithm = null) {
+/**
+ * Check if an auth method uses edge authentication (standard or selective)
+ */
+function isEdgeAuth(authMethod) {
+  return authMethod === 'edge' || authMethod === 'edge-selective';
+}
+
+async function runDeploy(experiment, architecture, buildDir, authMethod, algorithm = null, reuseEdgeAuth = false, withCloudfront = false) {
   logSection(`Deploying ${experiment}/${architecture} architecture`);
+
+  const selectiveEdge = authMethod === 'edge-selective';
+
+  // FaaS routes are prefixed with /frontend/ — CloudFront path patterns must match
+  const protectedPaths = architecture === 'faas'
+    ? ['/frontend/cart', '/frontend/addCartItem', '/frontend/emptyCart', '/frontend/checkout']
+    : undefined;
+
+  // JWKS delivery mode for Lambda@Edge. Default 'runtime' fetches the JWKS
+  // from Cognito at runtime (production-faithful, symmetric with the backend
+  // Cognito strategy). Set EDGE_JWKS_MODE=buildtime to reproduce the legacy
+  // experiment series (E44/E51/E100/E102/...) where the JWKS was embedded
+  // into the deployment package.
+  const jwksMode = process.env.EDGE_JWKS_MODE === 'buildtime' ? 'buildtime' : 'runtime';
+  if (isEdgeAuth(authMethod)) {
+    logSection(`Edge JWKS mode: ${jwksMode}`);
+  }
 
   try {
     let endpoints = [];
     let edgeKeyPair = null;
+    let reusingEdge = false;
 
     // If using argon2id-eddsa algorithm, generate Ed25519 key pair for JWT signing
     if (algorithm === 'argon2id-eddsa') {
@@ -27,28 +52,50 @@ async function runDeploy(experiment, architecture, buildDir, authMethod, algorit
       console.log('Generated Ed25519 key pair for JWT signing');
     }
 
-    // If using edge authentication, generate keys before main deployment
+    // If using edge authentication, prepare keys before main deployment
     // so EDGE_PUBLIC_KEY is available in environment variables
-    if (authMethod === 'edge') {
-      logSection('Preparing Edge Authentication Keys');
+    if (isEdgeAuth(authMethod)) {
+      const { generateEd25519KeyPair, hasEdgeAuthState, getEdgeAuthState } = require('../deploy-edge-auth');
 
-      const { generateEd25519KeyPair } = require('../deploy-edge-auth');
+      // Check if we can reuse existing edge-auth infrastructure
+      if (reuseEdgeAuth && hasEdgeAuthState()) {
+        const existingState = getEdgeAuthState();
+        if (existingState) {
+          logSection('Reusing Existing Edge Authentication Keys');
+          console.log('Existing edge-auth state found, will update in-place after architecture deploy');
+          console.log(`  Existing distribution: ${existingState.distributionId}`);
 
-      // Generate fresh keys for this deployment
-      // Note: SSM parameter lookup is skipped here because the terraform project name
-      // (with random suffix) isn't known until after experiment infrastructure is deployed.
-      // Keys are stored in SSM after edge-auth deployment for potential future reuse.
-      edgeKeyPair = generateEd25519KeyPair();
-      console.log('Generated new Ed25519 key pair');
+          // Use existing public key for backend deployment
+          process.env.EDGE_PUBLIC_KEY = existingState.publicKey;
 
-      // Set EDGE_PUBLIC_KEY environment variable for main deployment
-      process.env.EDGE_PUBLIC_KEY = edgeKeyPair.publicKey;
+          const projectRoot = path.join(__dirname, '..', '..');
+          const edgeKeyFile = path.join(projectRoot, '.edge_public_key');
+          fs.writeFileSync(edgeKeyFile, existingState.publicKey);
+          console.log(`Edge public key saved to: ${edgeKeyFile}`);
 
-      // Store public key for backends
-      const projectRoot = path.join(__dirname, '..', '..');
-      const edgeKeyFile = path.join(projectRoot, '.edge_public_key');
-      fs.writeFileSync(edgeKeyFile, edgeKeyPair.publicKey);
-      console.log(`Edge public key saved to: ${edgeKeyFile}`);
+          reusingEdge = true;
+        }
+      }
+
+      if (!reusingEdge) {
+        logSection('Preparing Edge Authentication Keys');
+
+        // Generate fresh keys for this deployment
+        // Note: SSM parameter lookup is skipped here because the terraform project name
+        // (with random suffix) isn't known until after experiment infrastructure is deployed.
+        // Keys are stored in SSM after edge-auth deployment for potential future reuse.
+        edgeKeyPair = generateEd25519KeyPair();
+        console.log('Generated new Ed25519 key pair');
+
+        // Set EDGE_PUBLIC_KEY environment variable for main deployment
+        process.env.EDGE_PUBLIC_KEY = edgeKeyPair.publicKey;
+
+        // Store public key for backends
+        const projectRoot = path.join(__dirname, '..', '..');
+        const edgeKeyFile = path.join(projectRoot, '.edge_public_key');
+        fs.writeFileSync(edgeKeyFile, edgeKeyPair.publicKey);
+        console.log(`Edge public key saved to: ${edgeKeyFile}`);
+      }
     }
 
     switch (architecture) {
@@ -74,11 +121,9 @@ async function runDeploy(experiment, architecture, buildDir, authMethod, algorit
         throw new Error(`Unknown architecture: ${architecture}`);
     }
 
-    // If using edge authentication, deploy CloudFront in front of the origin
-    if (authMethod === 'edge') {
-      logSection('Deploying Edge Authentication');
-
-      const { deployEdgeAuth } = require('../deploy-edge-auth');
+    // If using edge authentication, deploy/update CloudFront in front of the origin
+    if (isEdgeAuth(authMethod)) {
+      const { deployEdgeAuth, updateEdgeAuth } = require('../deploy-edge-auth');
 
       // Extract origin domain from endpoints
       // Endpoints are URLs like https://xxx.execute-api.us-east-1.amazonaws.com or http://xxx.elb.amazonaws.com
@@ -96,32 +141,152 @@ async function runDeploy(experiment, architecture, buildDir, authMethod, algorit
       console.log(`Origin domain: ${originDomain}`);
       console.log(`Origin protocol: ${originProtocol}`);
 
-      // Get the actual project name from terraform output (matches the infrastructure naming)
+      let edgeConfig;
+
+      if (reusingEdge) {
+        // Reuse path: update existing CloudFront/Lambda@Edge in-place
+        logSection('Updating Edge Authentication (in-place)');
+        try {
+          edgeConfig = await updateEdgeAuth(originDomain, {
+            originProtocol,
+            originHttpPort: 80,
+            originHttpsPort: 443,
+            selectiveEdgeRouting: selectiveEdge,
+            protectedPaths,
+            jwksMode
+          });
+        } catch (updateError) {
+          console.warn('Warning: In-place edge-auth update failed:', updateError.message);
+          console.log('Falling back to destroy + fresh deploy...');
+
+          // Fall back to destroy + fresh deploy
+          const { destroyEdgeAuth, generateEd25519KeyPair: genKeys } = require('../deploy-edge-auth');
+          const fallbackProjectRoot = path.join(__dirname, '..', '..');
+          const fallbackExperimentDir = path.join(fallbackProjectRoot, 'infrastructure', 'experiment');
+
+          try {
+            const fallbackProjectName = execSync('terraform output -raw project_name', {
+              cwd: fallbackExperimentDir,
+              encoding: 'utf8'
+            }).trim();
+            await destroyEdgeAuth(fallbackProjectName);
+          } catch (destroyErr) {
+            console.warn('Warning: Could not destroy edge auth during fallback:', destroyErr.message);
+          }
+
+          edgeKeyPair = genKeys();
+          process.env.EDGE_PUBLIC_KEY = edgeKeyPair.publicKey;
+
+          const projectName = execSync('terraform output -raw project_name', {
+            cwd: fallbackExperimentDir,
+            encoding: 'utf8'
+          }).trim();
+
+          edgeConfig = await deployEdgeAuth(projectName, originDomain, {
+            originProtocol,
+            originHttpPort: 80,
+            originHttpsPort: 443,
+            keyPair: edgeKeyPair,
+            selectiveEdgeRouting: selectiveEdge,
+            protectedPaths,
+            jwksMode
+          });
+        }
+      } else {
+        // Create path: fresh deployment
+        logSection('Deploying Edge Authentication');
+
+        // Get the actual project name from terraform output (matches the infrastructure naming)
+        const projectRoot = path.join(__dirname, '..', '..');
+        const experimentInfraDir = path.join(projectRoot, 'infrastructure', 'experiment');
+        const projectName = execSync('terraform output -raw project_name', {
+          cwd: experimentInfraDir,
+          encoding: 'utf8'
+        }).trim();
+        console.log(`Using project name from terraform: ${projectName}`);
+
+        edgeConfig = await deployEdgeAuth(projectName, originDomain, {
+          originProtocol,
+          originHttpPort: 80,
+          originHttpsPort: 443,
+          keyPair: edgeKeyPair,  // Pass pre-generated keys
+          selectiveEdgeRouting: selectiveEdge,
+          protectedPaths,
+          jwksMode
+        });
+      }
+
+      // Replace endpoints with CloudFront URL + architecture-specific path for health checking
+      let healthPath;
+      if (architecture === 'faas') {
+        // FaaS: API Gateway has no root route — only function-specific routes
+        healthPath = '/frontend';
+      } else if (architecture === 'monolith' || architecture === 'microservices') {
+        // Monolith/Microservices: Health check endpoint is at /health
+        healthPath = '/health';
+      } else {
+        // Default fallback for unknown architectures
+        healthPath = '/health';
+      }
+
+      endpoints = [`${edgeConfig.cloudfrontUrl}${healthPath}`];
+
+      // Store the CloudFront URL for workload.sh to use
+      const projectRoot = path.join(__dirname, '..', '..');
+      const edgeUrlFile = path.join(projectRoot, '.edge_cloudfront_url');
+      fs.writeFileSync(edgeUrlFile, edgeConfig.cloudfrontUrl);
+
+      console.log(`✓ Edge authentication ${reusingEdge ? 'updated' : 'deployed'}`);
+      console.log(`  CloudFront URL: ${edgeConfig.cloudfrontUrl}`);
+      console.log(`  Health check URL: ${endpoints[0]}`);
+    }
+
+    // If --with-cloudfront and NOT edge auth, deploy CloudFront as passthrough proxy
+    if (withCloudfront && !isEdgeAuth(authMethod)) {
+      const { deployCloudfrontProxy } = require('../deploy-cloudfront-proxy');
+
+      if (endpoints.length === 0) {
+        throw new Error('No endpoints available for CloudFront proxy deployment');
+      }
+
+      const originUrl = new URL(endpoints[0]);
+      const originDomain = originUrl.hostname;
+      const originProtocol = architecture === 'faas' ? 'https-only' : 'http-only';
+
+      console.log(`Origin domain: ${originDomain}`);
+      console.log(`Origin protocol: ${originProtocol}`);
+
+      logSection('Deploying CloudFront Proxy (passthrough)');
+
       const projectRoot = path.join(__dirname, '..', '..');
       const experimentInfraDir = path.join(projectRoot, 'infrastructure', 'experiment');
       const projectName = execSync('terraform output -raw project_name', {
         cwd: experimentInfraDir,
         encoding: 'utf8'
       }).trim();
-      console.log(`Using project name from terraform: ${projectName}`);
 
-      const edgeConfig = await deployEdgeAuth(projectName, originDomain, {
+      const proxyConfig = await deployCloudfrontProxy(projectName, originDomain, {
         originProtocol,
         originHttpPort: 80,
-        originHttpsPort: 443,
-        keyPair: edgeKeyPair  // Pass pre-generated keys
+        originHttpsPort: 443
       });
 
-      // Replace endpoints with CloudFront URL + /frontend path for health checking
-      // The base CloudFront URL returns 403 because there's no root route on API Gateway
-      endpoints = [`${edgeConfig.cloudfrontUrl}/frontend`];
+      // Replace endpoints with CloudFront URL
+      let healthPath;
+      if (architecture === 'faas') {
+        healthPath = '/frontend';
+      } else {
+        healthPath = '/health';
+      }
+
+      endpoints = [`${proxyConfig.cloudfrontUrl}${healthPath}`];
 
       // Store the CloudFront URL for workload.sh to use
       const edgeUrlFile = path.join(projectRoot, '.edge_cloudfront_url');
-      fs.writeFileSync(edgeUrlFile, edgeConfig.cloudfrontUrl);
+      fs.writeFileSync(edgeUrlFile, proxyConfig.cloudfrontUrl);
 
-      console.log(`✓ Edge authentication deployed`);
-      console.log(`  CloudFront URL: ${edgeConfig.cloudfrontUrl}`);
+      console.log(`✓ CloudFront proxy deployed`);
+      console.log(`  CloudFront URL: ${proxyConfig.cloudfrontUrl}`);
       console.log(`  Health check URL: ${endpoints[0]}`);
     }
 
@@ -134,33 +299,62 @@ async function runDeploy(experiment, architecture, buildDir, authMethod, algorit
   }
 }
 
-async function runDestroy(experiment, architecture, authMethod) {
+async function runDestroy(experiment, architecture, authMethod, options = {}) {
   logSection(`Destroying ${experiment}/${architecture} infrastructure`);
 
   try {
+    // Destroy CloudFront proxy first (if it exists)
+    // Must be destroyed before the origin (API Gateway/ALB)
+    if (options.withCloudfront) {
+      try {
+        const { destroyCloudfrontProxy, hasCloudfrontProxyState } = require('../deploy-cloudfront-proxy');
+        if (hasCloudfrontProxyState()) {
+          const projectRoot = path.join(__dirname, '..', '..');
+          const experimentInfraDir = path.join(projectRoot, 'infrastructure', 'experiment');
+          let projectName;
+          try {
+            projectName = execSync('terraform output -raw project_name', {
+              cwd: experimentInfraDir,
+              encoding: 'utf8',
+              stdio: ['pipe', 'pipe', 'pipe']
+            }).trim();
+          } catch {
+            projectName = `befaas-${experiment}`;
+          }
+          await destroyCloudfrontProxy(projectName);
+        }
+      } catch (proxyError) {
+        console.warn('Warning: Could not destroy CloudFront proxy:', proxyError.message);
+      }
+    }
+
     // Destroy edge auth first (if it exists)
     // Edge auth must be destroyed before the origin (API Gateway/ALB)
-    if (authMethod === 'edge') {
-      try {
-        const { destroyEdgeAuth } = require('../deploy-edge-auth');
-        // Get the project name from terraform state (if it exists)
-        const projectRoot = path.join(__dirname, '..', '..');
-        const experimentInfraDir = path.join(projectRoot, 'infrastructure', 'experiment');
-        let projectName;
+    if (isEdgeAuth(authMethod)) {
+      if (options.skipEdgeAuth) {
+        console.log('Skipping edge auth destruction (--reuse-edge-auth or --keep-edge-auth)');
+      } else {
         try {
-          projectName = execSync('terraform output -raw project_name', {
-            cwd: experimentInfraDir,
-            encoding: 'utf8',
-            stdio: ['pipe', 'pipe', 'pipe']
-          }).trim();
-        } catch {
-          // Fallback if terraform state doesn't exist
-          projectName = `befaas-${experiment}`;
+          const { destroyEdgeAuth } = require('../deploy-edge-auth');
+          // Get the project name from terraform state (if it exists)
+          const projectRoot = path.join(__dirname, '..', '..');
+          const experimentInfraDir = path.join(projectRoot, 'infrastructure', 'experiment');
+          let projectName;
+          try {
+            projectName = execSync('terraform output -raw project_name', {
+              cwd: experimentInfraDir,
+              encoding: 'utf8',
+              stdio: ['pipe', 'pipe', 'pipe']
+            }).trim();
+          } catch {
+            // Fallback if terraform state doesn't exist
+            projectName = `befaas-${experiment}`;
+          }
+          await destroyEdgeAuth(projectName);
+        } catch (edgeError) {
+          console.warn('Warning: Could not destroy edge auth:', edgeError.message);
+          // Continue with main infrastructure destruction
         }
-        await destroyEdgeAuth(projectName);
-      } catch (edgeError) {
-        console.warn('Warning: Could not destroy edge auth:', edgeError.message);
-        // Continue with main infrastructure destruction
       }
     }
 
@@ -302,6 +496,12 @@ async function forceDestroyRedis(experiment) {
   }
 
   try {
+    // Ensure providers are installed before reading state
+    if (!fs.existsSync(path.join(redisDir, '.terraform'))) {
+      console.log('Initializing Terraform providers for redisAws...');
+      execSync('terraform init', { cwd: redisDir, stdio: 'inherit' });
+    }
+
     // Get Redis instance information from Terraform state
     console.log('Getting Redis instance information...');
     const stateData = execSync('terraform show -json', {
@@ -335,6 +535,9 @@ async function forceDestroyRedis(experiment) {
 
     if (fs.existsSync(vpcDir)) {
       try {
+        if (!fs.existsSync(path.join(vpcDir, '.terraform'))) {
+          execSync('terraform init', { cwd: vpcDir, stdio: 'inherit' });
+        }
         const vpcOutput = execSync('terraform output -json ssh_private_key', {
           cwd: vpcDir,
           encoding: 'utf8'

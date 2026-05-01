@@ -162,8 +162,14 @@ function parseUsersCSV(limit = null) {
         password: fields[passwordIndex]
       };
 
-      if (hasPrecomputedHashes && fields[passwordHashIndex]) {
-        user.passwordHash = fields[passwordHashIndex];
+      // passwordHash is always the last column and may contain commas
+      // (e.g. argon2id: $argon2id$v=19$m=65536,t=3,p=1$...), so join all remaining fields
+      // and strip surrounding quotes from proper CSV quoting
+      if (hasPrecomputedHashes && fields.length > passwordHashIndex) {
+        const hash = fields.slice(passwordHashIndex).join(',').replace(/^"|"$/g, '');
+        if (hash) {
+          user.passwordHash = hash;
+        }
       }
 
       users.push(user);
@@ -370,6 +376,17 @@ class RedisClient {
 }
 
 /**
+ * Check if a precomputed hash matches the expected algorithm
+ */
+function hashMatchesAlgorithm(hash, algorithm) {
+  if (algorithm === 'bcrypt-hs256') {
+    return hash.startsWith('$2a$') || hash.startsWith('$2b$');
+  }
+  // argon2id-eddsa
+  return hash.startsWith('$argon2id$');
+}
+
+/**
  * Prepare user data for a batch of users
  */
 async function prepareBatch(users, authMode, hasPrecomputedHashes, algorithm) {
@@ -381,8 +398,8 @@ async function prepareBatch(users, authMode, hasPrecomputedHashes, algorithm) {
       value: { password: user.password }
     }));
   } else if (authMode === 'service-integrated-manual') {
-    // Use precomputed hashes if available
-    if (hasPrecomputedHashes && users.every(u => u.passwordHash)) {
+    // Use precomputed hashes if available and they match the requested algorithm
+    if (hasPrecomputedHashes && users.every(u => u.passwordHash && hashMatchesAlgorithm(u.passwordHash, algorithm))) {
       return users.map(user => ({
         key: `user:${user.userName}`,
         value: {
@@ -394,7 +411,11 @@ async function prepareBatch(users, authMode, hasPrecomputedHashes, algorithm) {
     }
 
     // Fallback: compute hashes at runtime (slow)
-    console.log(`  Warning: Computing hashes at runtime (CSV lacks passwordHash column, using ${algorithm || 'argon2id-eddsa'})`);
+    if (hasPrecomputedHashes) {
+      console.log(`  Warning: CSV hashes don't match algorithm '${algorithm}', computing at runtime`);
+    } else {
+      console.log(`  Warning: Computing hashes at runtime (CSV lacks passwordHash column, using ${algorithm || 'argon2id-eddsa'})`);
+    }
     const passwords = users.map(u => u.password);
     const hashes = await hashPasswordsBatch(passwords, algorithm);
 
@@ -431,9 +452,14 @@ async function main() {
   const { users, hasPrecomputedHashes } = parseUsersCSV(config.limit);
   console.log(`Found ${users.length} users to register`);
 
-  if (hasPrecomputedHashes) {
-    console.log('Using precomputed password hashes from CSV (fast mode)');
-  } else if (config.auth === 'service-integrated-manual') {
+  if (hasPrecomputedHashes && config.auth === 'service-integrated-manual') {
+    const sampleHash = users.find(u => u.passwordHash)?.passwordHash || '';
+    if (hashMatchesAlgorithm(sampleHash, config.algorithm)) {
+      console.log('Using precomputed password hashes from CSV (fast mode)');
+    } else {
+      console.log(`Warning: CSV hashes don't match algorithm '${config.algorithm}' - will compute at runtime (slow)`);
+    }
+  } else if (!hasPrecomputedHashes && config.auth === 'service-integrated-manual') {
     console.log('Warning: No passwordHash column found - will compute hashes at runtime (slow)');
     console.log('Tip: Run artillery/migrateUsers.js to add precomputed hashes to your users.csv');
   }

@@ -24,6 +24,7 @@ class HardwareConfig:
     datetime_str: Optional[str] = None
     password_hash_algorithm: Optional[str] = None
     jwt_sign_algorithm: Optional[str] = None
+    with_cloudfront: bool = False
     # Per-service scaling rules (list of ScalingRuleData)
     scaling_rules: list = field(default_factory=list)
 
@@ -102,6 +103,7 @@ def parse_hardware_config(path: Path) -> Optional[HardwareConfig]:
         datetime_str=data.get('datetime'),
         password_hash_algorithm=data.get('password_hash_algorithm'),
         jwt_sign_algorithm=data.get('jwt_sign_algorithm'),
+        with_cloudfront=data.get('with_cloudfront', False),
     )
 
     # New format: per-service scaling rules under "services" key

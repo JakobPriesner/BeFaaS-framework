@@ -1,4 +1,4 @@
-async function verifyJWT() {
+async function verifyJWT () {
   return true;
 }
 

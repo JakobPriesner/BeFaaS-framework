@@ -75,7 +75,6 @@ function initTemplates(basePath) {
   templates = loadTemplates(basePath)
 }
 
-// Cookie helpers
 function getCookies(ctx) {
   const storageObj = getStorageObj(ctx)
   const newMockedCookies = ctx.cookies.get('storageObj')
@@ -89,7 +88,6 @@ function storeCookies(ctx) {
   ctx.cookies.set('storageObj', JSON.stringify(storageObj), { overwrite: true, sameSite: true })
 }
 
-// Session helpers
 function getSessionID(ctx) {
   const storageObj = getStorageObj(ctx)
   if (!storageObj.sessionId) {
@@ -128,7 +126,6 @@ function getJWTToken(ctx) {
   return storageObj.jwtToken || ''
 }
 
-// Price helpers
 async function convertPrice(ctx, priceUsd) {
   if (getUserCurrency(ctx) === 'USD') {
     return priceUsd
@@ -189,8 +186,6 @@ function setupAuth(ctx) {
     }
   }
 }
-
-// Route Handlers
 
 async function handleHome(ctx) {
   setupAuth(ctx)
@@ -364,7 +359,6 @@ async function handleCheckout(ctx) {
     })
   ])
 
-  // Handle checkout failure
   if (!checkoutResult || !checkoutResult.order) {
     // Check for auth timeout (Cognito JWKS fetch timeout)
     if (checkoutResult?.error === 'AuthTimeout') {
@@ -409,7 +403,6 @@ async function handleSetUser(ctx) {
 
   // Handle authentication failure
   if (!authResult.accessToken || authResult.success === false) {
-    console.error(`Authentication failed for user ${userName}: ${authResult.error || 'No token returned'}`)
     ctx.status = 401
     ctx.type = 'application/json'
     if (wantsJson) {
@@ -431,7 +424,6 @@ async function handleSetUser(ctx) {
   storageObj.userName = userName
   storageObj.userPassword = password || ''
   storageObj.jwtToken = authResult.accessToken
-  console.log(`User ${userName} authenticated successfully`)
 
   ctx.type = 'application/json'
   storeCookies(ctx)
@@ -464,23 +456,18 @@ async function handleRegister(ctx) {
       storageObj.userName = userName
       storageObj.userPassword = password || ''
       storageObj.jwtToken = authResult.accessToken
-      console.log(`User ${userName} registered and logged in successfully`)
     } else {
-      console.error(`User ${userName} registered but login failed: ${authResult.error}`)
       storageObj.userName = ''
       storageObj.jwtToken = ''
     }
   } else {
-    console.error(`Failed to register user ${userName}: ${registerResult.error}`)
     const authResult = await ctx.call('login', { userName, password })
     if (authResult.success) {
       emptyCartSize(ctx)
       storageObj.userName = userName
       storageObj.userPassword = password || ''
       storageObj.jwtToken = authResult.accessToken
-      console.log(`User ${userName} already existed, logged in successfully`)
     } else {
-      console.error(`Failed to login existing user ${userName}: ${authResult.error}`)
       storageObj.jwtToken = ''
     }
   }

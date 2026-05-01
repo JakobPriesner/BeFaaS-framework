@@ -1,32 +1,15 @@
-"""
-Database configuration for BeFaaS benchmark imports.
-
-Edit the values below to configure your database connection.
-"""
-
 from urllib.parse import quote_plus
 
-# =============================================================================
-# DATABASE CONFIGURATION - Edit these values
-# =============================================================================
-
-# Database type: 'postgresql' (SQLite not supported by db_import)
 DB_TYPE = "postgresql"
 
-# PostgreSQL connection settings
 DB_HOST = "192.168.178.22"
 DB_PORT = 5437
 DB_NAME = "postgres"
 DB_USER = "postgres"
 DB_PASSWORD = "jxmEaRj^R5@5wF1@SQvCPi4&eqdG7B3y"  # Set your password here
 
-# =============================================================================
-# Helper functions (no need to edit below)
-# =============================================================================
-
 
 def get_config() -> dict:
-    """Get database configuration as a dictionary."""
     return {
         "type": DB_TYPE,
         "host": DB_HOST,
@@ -38,7 +21,6 @@ def get_config() -> dict:
 
 
 def get_database_url() -> str:
-    """Generate SQLAlchemy database URL from configuration."""
     if DB_TYPE.lower() not in ("postgresql", "postgres", "pg"):
         raise ValueError("Only PostgreSQL is supported. Set DB_TYPE='postgresql'")
 
@@ -52,7 +34,6 @@ def get_database_url() -> str:
 
 
 def print_config():
-    """Print current configuration (password masked)."""
     print("Database Configuration:")
     print(f"  Type:     {DB_TYPE}")
     print(f"  Host:     {DB_HOST}")

@@ -166,7 +166,7 @@ def parse_entries(data):
                         'x_pair': x_pair,
                     })
 
-        # Function timing entries (have perf data)
+        # Function timing entries (have perf data) - FaaS architecture
         if 'perf' in event:
             perf = event['perf']
             fn_name = event_data.get('fn', {}).get('name', '')
@@ -183,6 +183,53 @@ def parse_entries(data):
                     'context_id': context_id,
                     'x_pair': x_pair,
                 })
+
+        # Handler events - microservices/monolith architecture
+        # These serve as both "requests" (when from frontend) and function calls
+        if 'handler' in event:
+            handler = event['handler']
+            fn_name = event_data.get('fn', {}).get('name', '')
+            context_id = event.get('contextId', '')
+            x_pair = event.get('xPair', '')
+            route = handler.get('route', '')
+            duration_ms = handler.get('durationMs', 0)
+            status_code = handler.get('statusCode', 200)
+
+            # Handler events from frontend-service are user-facing requests
+            entries['requests'].append({
+                'timestamp': ts,
+                'url': route,
+                'response_time_ms': duration_ms,
+                'status_code': status_code,
+                'context_id': context_id,
+                'x_pair': x_pair,
+            })
+
+            # Also record as function call for call chain analysis
+            entries['function_calls'].append({
+                'timestamp': ts,
+                'function': fn_name,
+                'mark': f'rpcIn:{route}',
+                'duration_ms': duration_ms,
+                'context_id': context_id,
+                'x_pair': x_pair,
+            })
+
+        # RPC Out events - microservices/monolith architecture
+        if 'rpcOut' in event:
+            rpc_out = event['rpcOut']
+            fn_name = event_data.get('fn', {}).get('name', '')
+            context_id = event.get('contextId', '')
+            x_pair = event.get('xPair', '')
+
+            entries['function_calls'].append({
+                'timestamp': ts,
+                'function': fn_name,
+                'mark': f'rpcOut:{rpc_out.get("target", "")}:{rpc_out.get("callXPair", "")}',
+                'duration_ms': rpc_out.get('durationMs', 0),
+                'context_id': context_id,
+                'x_pair': x_pair,
+            })
 
         # Auth check entries
         if 'authCheck' in event:
@@ -211,9 +258,13 @@ def parse_entries(data):
     return entries
 
 def extract_endpoint(url):
-    """Extract endpoint pattern from URL"""
+    """Extract endpoint pattern from URL or route string"""
     if not url:
         return 'unknown'
+
+    # Handle microservices route format: "get:/", "post:/cart", etc.
+    if ':/' in url and not url.startswith('http'):
+        return url
 
     # Remove query params
     url = url.split('?')[0]

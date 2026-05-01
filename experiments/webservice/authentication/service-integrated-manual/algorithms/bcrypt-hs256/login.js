@@ -4,28 +4,7 @@ const bcrypt = require('bcryptjs')
 const JWT_SECRET = process.env.JWT_SECRET || 'befaas-default-secret-change-in-production'
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h'
 
-/**
- * Login Service for 'service-integrated-manual' auth mode.
- * Validates user against Redis and generates real JWT tokens.
- *
- * Ex Payload Body: {
- *   "userName": "testuser",
- *   "password": "TestPassword123!"
- * }
- *
- * Response on success: {
- *   "success": true,
- *   "accessToken": "<jwt-access-token>",
- *   "idToken": "<jwt-id-token>",
- *   "refreshToken": "<jwt-refresh-token>"
- * }
- *
- * Response on failure: {
- *   "success": false,
- *   "error": "..."
- * }
- */
-async function handle(event, ctx) {
+async function handle (event, ctx) {
   const { userName, password } = event
 
   if (!userName || !password) {
@@ -65,7 +44,6 @@ async function handle(event, ctx) {
     { algorithm: 'HS256', expiresIn: JWT_EXPIRES_IN }
   )
 
-  // Refresh token has longer expiry
   const refreshToken = jwt.sign(
     { ...tokenPayload, token_use: 'refresh' },
     JWT_SECRET,

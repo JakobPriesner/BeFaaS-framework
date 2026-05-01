@@ -14,26 +14,7 @@ const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID
 const COGNITO_CLIENT_SECRET = process.env.COGNITO_CLIENT_SECRET
 const COGNITO_USER_POOL_ID = process.env.COGNITO_USER_POOL_ID
 
-/**
- * Register Service for 'service-integrated' auth mode.
- * Creates a new user in Cognito.
- *
- * Ex Payload Body: {
- *   "userName": "testuser",
- *   "password": "TestPassword123!"
- * }
- *
- * Response on success: {
- *   "success": true,
- *   "message": "User registered successfully"
- * }
- *
- * Response on failure: {
- *   "success": false,
- *   "error": "..."
- * }
- */
-async function handle(event, ctx) {
+async function handle (event, ctx) {
   const { userName, password } = event
 
   if (!userName || !password) {

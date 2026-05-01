@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 
-// Define microservices and their functions
 const services = {
   'cart-service': {
     functions: ['getcart', 'addcartitem', 'emptycart', 'cartkvstorage'],
@@ -20,7 +19,7 @@ const services = {
   },
   'content-service': {
     functions: ['getads', 'supportedcurrencies', 'currency'],
-    copyCurrencyModule: true, // Need currency/exchangerates.js for currency functions
+    copyCurrencyModule: true,
     dependencies: {
       '@befaas/lib': '*',
       express: '^4.18.2',
@@ -30,21 +29,20 @@ const services = {
     port: 3004
   },
   'frontend-service': {
-    // Note: frontend-service uses handlers.js directly, not the FaaS frontend function
     functions: ['login', 'register'],
-    copyFrontendHandlers: true, // Special flag to copy frontend handlers and templates
+    copyFrontendHandlers: true,
     dependencies: {
       '@aws-sdk/client-cognito-identity-provider': '^3.705.0',
       '@befaas/lib': '*',
       '@smithy/node-http-handler': '^3.3.2',
+      argon2: '^0.41.1',
       axios: '^1.4.0',
-      bcryptjs: '^2.4.3', // For bcrypt-hs256 algorithm variant
+      bcryptjs: '^2.4.3',
       'cookie-parser': '^1.4.6',
       express: '^4.18.2',
-      'hash-wasm': '^4.11.0', // For argon2id-eddsa algorithm variant
-      ioredis: '^5.3.2', // For 'none' auth mode user validation
-      jose: '^5.2.0', // For argon2id-eddsa algorithm variant
-      jsonwebtoken: '^9.0.2', // For bcrypt-hs256 algorithm variant
+      ioredis: '^5.3.2',
+      jose: '^5.2.0',
+      jsonwebtoken: '^9.0.2',
       lodash: '^4.17.21',
       nunjucks: '^3.2.4'
     },
@@ -66,7 +64,7 @@ const services = {
   },
   'product-service': {
     functions: ['getproduct', 'listproducts', 'searchproducts', 'listrecommendations'],
-    copyProductCatalog: true, // Need productcatalog/products.js for product functions
+    copyProductCatalog: true,
     dependencies: {
       '@befaas/lib': '*',
       express: '^4.18.2',
@@ -78,7 +76,7 @@ const services = {
   }
 };
 
-function copyFunctionToService(functionName, serviceDir, authStrategy, algorithm) {
+function copyFunctionToService (functionName, serviceDir, authStrategy, algorithm) {
   const functionsDir = path.join(serviceDir, 'functions');
   const functionDir = path.join(functionsDir, functionName);
 
@@ -94,7 +92,6 @@ function copyFunctionToService(functionName, serviceDir, authStrategy, algorithm
   }
 
   let srcPath;
-  // For auth strategies with custom login/register handlers, use those instead of default Cognito handlers
   if (authMockFunctions.includes(functionName)) {
     const customHandlerPath = path.join(authStrategyDir, `${functionName}.js`);
     if (fs.existsSync(customHandlerPath)) {
@@ -110,11 +107,8 @@ function copyFunctionToService(functionName, serviceDir, authStrategy, algorithm
 
   const destPath = path.join(functionDir, 'index.js');
 
-  // Copy function file as-is (like monolith does)
-  // @befaas/lib is included in dependencies so require works
   fs.copyFileSync(srcPath, destPath);
 
-  // Read content to check for auth requirement
   const content = fs.readFileSync(srcPath, 'utf8');
 
   // Copy auth file directly into function directory (functions require './auth')
@@ -127,7 +121,7 @@ function copyFunctionToService(functionName, serviceDir, authStrategy, algorithm
   }
 }
 
-function copyAuthStrategy(serviceDir, authStrategy, algorithm) {
+function copyAuthStrategy (serviceDir, authStrategy, algorithm) {
   const authDir = path.join(serviceDir, 'auth');
   if (!fs.existsSync(authDir)) {
     fs.mkdirSync(authDir, { recursive: true });
@@ -148,7 +142,7 @@ function copyAuthStrategy(serviceDir, authStrategy, algorithm) {
   });
 }
 
-function copySharedModules(serviceDir) {
+function copySharedModules (serviceDir) {
   const sharedDir = path.join(serviceDir, 'shared');
   if (!fs.existsSync(sharedDir)) {
     fs.mkdirSync(sharedDir, { recursive: true });
@@ -184,9 +178,7 @@ function copySharedModules(serviceDir) {
   });
 }
 
-function copyCurrencyModule(serviceDir) {
-  // Copy shared currency module (exchangerates.js) for services that need it
-  // The currency functions require '../../currency/exchangerates' relative to functions/currency/
+function copyCurrencyModule (serviceDir) {
   const currencySrcDir = path.join(__dirname, '..', '..', 'currency');
   const currencyDestDir = path.join(serviceDir, 'currency');
 
@@ -199,13 +191,11 @@ function copyCurrencyModule(serviceDir) {
 
   if (fs.existsSync(exchangeRatesSrc)) {
     fs.copyFileSync(exchangeRatesSrc, exchangeRatesDest);
-    console.log(`    Copied currency/exchangerates.js`);
+    console.log('    Copied currency/exchangerates.js');
   }
 }
 
-function copyProductCatalog(serviceDir) {
-  // Copy productcatalog/products.js for product-service
-  // Functions require '../../productcatalog/products' from functions/functionName/
+function copyProductCatalog (serviceDir) {
   const productSrcDir = path.join(__dirname, '..', '..', 'productcatalog');
   const productDestDir = path.join(serviceDir, 'productcatalog');
 
@@ -218,12 +208,11 @@ function copyProductCatalog(serviceDir) {
 
   if (fs.existsSync(productsSrc)) {
     fs.copyFileSync(productsSrc, productsDest);
-    console.log(`    Copied productcatalog/products.js`);
+    console.log('    Copied productcatalog/products.js');
   }
 }
 
 function copyFrontendHandlers(serviceDir) {
-  // Copy frontend handlers.js and html_templates for frontend-service
   const frontendSrcDir = path.join(__dirname, '..', '..', 'functions', 'frontend');
   const frontendDestDir = path.join(serviceDir, 'functions', 'frontend');
 
@@ -231,13 +220,10 @@ function copyFrontendHandlers(serviceDir) {
     fs.mkdirSync(frontendDestDir, { recursive: true });
   }
 
-  // Copy handlers.js as-is (like monolith does)
-  // @befaas/lib is included in dependencies so require works
   const handlersSrc = path.join(frontendSrcDir, 'handlers.js');
   const handlersDest = path.join(frontendDestDir, 'handlers.js');
   fs.copyFileSync(handlersSrc, handlersDest);
 
-  // Copy html_templates directory
   const templatesSrcDir = path.join(frontendSrcDir, 'html_templates');
   const templatesDestDir = path.join(frontendDestDir, 'html_templates');
 
@@ -254,17 +240,16 @@ function copyFrontendHandlers(serviceDir) {
     }
   });
 
-  console.log(`    Copied frontend handlers and templates`);
+  console.log('    Copied frontend handlers and templates');
 }
 
-function copyDockerfile(serviceName, serviceDir) {
+function copyDockerfile (serviceName, serviceDir) {
   const dockerfileSrc = path.join(__dirname, serviceName, 'Dockerfile');
   const dockerfileDest = path.join(serviceDir, 'Dockerfile');
 
   if (fs.existsSync(dockerfileSrc)) {
     fs.copyFileSync(dockerfileSrc, dockerfileDest);
   } else {
-    // Create a default Dockerfile if one doesn't exist
     const defaultDockerfile = `# Multi-stage build for ${serviceName}
 FROM node:18-alpine AS base
 
@@ -309,52 +294,42 @@ CMD ["node", "index.js"]
   }
 }
 
-function buildService(serviceName, serviceConfig, tmpDir, authStrategy, algorithm) {
+function buildService (serviceName, serviceConfig, tmpDir, authStrategy, algorithm) {
   console.log(`  Building ${serviceName}...`);
 
   const serviceDir = path.join(tmpDir, serviceName);
   const functionsDir = path.join(serviceDir, 'functions');
 
-  // Create service directory structure
   if (!fs.existsSync(functionsDir)) {
     fs.mkdirSync(functionsDir, { recursive: true });
   }
 
-  // Copy service index.js
   const serviceIndexPath = path.join(__dirname, serviceName, 'index.js');
   const destServiceIndexPath = path.join(serviceDir, 'index.js');
   fs.copyFileSync(serviceIndexPath, destServiceIndexPath);
 
-  // Copy Dockerfile
   copyDockerfile(serviceName, serviceDir);
 
-  // Copy all functions for this service
   serviceConfig.functions.forEach(functionName => {
     copyFunctionToService(functionName, serviceDir, authStrategy, algorithm);
   });
 
-  // Copy frontend handlers and templates if needed (for frontend-service)
   if (serviceConfig.copyFrontendHandlers) {
     copyFrontendHandlers(serviceDir);
   }
 
-  // Copy currency module if needed (for content-service)
   if (serviceConfig.copyCurrencyModule) {
     copyCurrencyModule(serviceDir);
   }
 
-  // Copy product catalog if needed (for product-service)
   if (serviceConfig.copyProductCatalog) {
     copyProductCatalog(serviceDir);
   }
 
-  // Copy shared modules (service discovery, etc.)
   copySharedModules(serviceDir);
 
-  // Copy auth strategy
   copyAuthStrategy(serviceDir, authStrategy, algorithm);
 
-  // Create package.json
   const packageJson = {
     name: serviceName,
     version: '1.0.0',
@@ -370,15 +345,13 @@ function buildService(serviceName, serviceConfig, tmpDir, authStrategy, algorith
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
 }
 
-async function build(tmpDir, authStrategy, bundleMode = 'minimal', algorithm = null) {
+async function build (tmpDir, authStrategy, bundleMode = 'minimal', algorithm = null) {
   console.log(`Building Microservices architecture for use case${algorithm ? ` (algorithm: ${algorithm})` : ''}`);
 
-  // Create the temporary directory, if not exists
   if (!fs.existsSync(tmpDir)) {
     fs.mkdirSync(tmpDir, { recursive: true });
   }
 
-  // Build all services
   Object.entries(services).forEach(([serviceName, serviceConfig]) => {
     buildService(serviceName, serviceConfig, tmpDir, authStrategy, algorithm);
   });

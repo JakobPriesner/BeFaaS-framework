@@ -12,7 +12,13 @@ const { execSync } = require('child_process');
  * @param {string} options.target - Single -target flag
  */
 function runTerraform(workingDir, command, options = {}) {
-  const { vars = {}, targets = [], target = null } = options;
+  const { vars = {}, targets = [], target = null, parallelism = null } = options;
+
+  // Auto-init if providers haven't been installed yet
+  if (command !== 'init' && !fs.existsSync(path.join(workingDir, '.terraform'))) {
+    console.log(`  → terraform init (auto: .terraform missing)`);
+    execSync('terraform init', { cwd: workingDir, stdio: 'inherit' });
+  }
 
   let cmd = `terraform ${command}`;
 
@@ -37,6 +43,11 @@ function runTerraform(workingDir, command, options = {}) {
   // Add auto-approve for apply/destroy
   if (command === 'apply' || command === 'destroy') {
     cmd += ' -auto-approve';
+  }
+
+  // Higher parallelism for destroy (default 10 is conservative)
+  if (command === 'destroy') {
+    cmd += ` -parallelism=${parallelism || 50}`;
   }
 
   console.log(`  → ${cmd}`);
@@ -230,6 +241,132 @@ async function cleanupVpcNetworkInterfaces(vpcId, awsRegion) {
   }
 }
 
+/**
+ * Delete all non-default security groups in a VPC
+ * @param {string} vpcId - The VPC ID
+ * @param {string} awsRegion - AWS region
+ */
+async function cleanupVpcSecurityGroups(vpcId, awsRegion) {
+  console.log(`Cleaning up security groups in VPC ${vpcId}...`);
+
+  try {
+    const result = execSync(
+      `aws ec2 describe-security-groups --filters "Name=vpc-id,Values=${vpcId}" --query "SecurityGroups[?GroupName!='default'].{Id:GroupId,Name:GroupName}" --output json --region ${awsRegion}`,
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+
+    const sgs = JSON.parse(result);
+    if (!sgs || sgs.length === 0) {
+      console.log('  No non-default security groups found');
+      return;
+    }
+
+    console.log(`  Found ${sgs.length} security group(s)`);
+
+    for (const sg of sgs) {
+      try {
+        console.log(`  Deleting security group ${sg.Name} (${sg.Id})...`);
+        execSync(
+          `aws ec2 delete-security-group --group-id ${sg.Id} --region ${awsRegion}`,
+          { stdio: 'pipe' }
+        );
+        console.log(`  ✓ Deleted security group ${sg.Name} (${sg.Id})`);
+      } catch (error) {
+        console.log(`  ⚠ Could not delete security group ${sg.Name} (${sg.Id}): ${error.message}`);
+      }
+    }
+  } catch (error) {
+    console.log(`  Could not cleanup security groups: ${error.message}`);
+  }
+}
+
+/**
+ * Import orphaned VPC security groups into Terraform state before apply.
+ * If ssh-access or redis-access security groups exist in AWS but are missing
+ * from Terraform state, import them to prevent InvalidGroup.Duplicate errors.
+ * @param {string} vpcDir - VPC terraform directory
+ */
+function importOrphanedVpcResources(vpcDir) {
+  const awsRegion = process.env.AWS_REGION || 'us-east-1';
+  const vpcId = getVpcIdFromState(vpcDir);
+  if (!vpcId) {
+    return;
+  }
+
+  // Check what resources are already in state
+  let stateResources = [];
+  try {
+    const stateList = execSync('terraform state list', {
+      cwd: vpcDir,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    stateResources = stateList.trim().split('\n').filter(Boolean);
+  } catch {
+    return;
+  }
+
+  const sgResources = [
+    { tfName: 'aws_security_group.ssh', awsName: 'ssh-access' },
+    { tfName: 'aws_security_group.redis', awsName: 'redis-access' }
+  ];
+
+  for (const { tfName, awsName } of sgResources) {
+    if (stateResources.includes(tfName)) {
+      continue;
+    }
+
+    // Check if the security group exists in AWS
+    try {
+      const result = execSync(
+        `aws ec2 describe-security-groups --filters "Name=group-name,Values=${awsName}" "Name=vpc-id,Values=${vpcId}" --query "SecurityGroups[0].GroupId" --output text --region ${awsRegion}`,
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim();
+
+      if (result && result !== 'None') {
+        console.log(`  Importing orphaned security group ${awsName} (${result}) into Terraform state...`);
+        execSync(`terraform import '${tfName}' '${result}'`, {
+          cwd: vpcDir,
+          stdio: 'inherit'
+        });
+        console.log(`  ✓ Imported ${awsName}`);
+      }
+    } catch (error) {
+      console.log(`  ⚠ Could not check/import ${awsName}: ${error.message}`);
+    }
+  }
+}
+
+/**
+ * Ensure the persistent Cognito user pool is deployed.
+ * All architectures reference its state; if the state file is missing,
+ * terraform apply on the provider infrastructure will fail.
+ * @param {string} projectRoot - Project root directory
+ */
+function ensureCognitoDeployed(projectRoot) {
+  const cognitoDir = path.join(projectRoot, 'infrastructure', 'services', 'cognito');
+  const cognitoState = path.join(cognitoDir, 'terraform.tfstate');
+
+  if (!fs.existsSync(cognitoDir)) {
+    return;
+  }
+
+  if (fs.existsSync(cognitoState)) {
+    try {
+      const state = JSON.parse(fs.readFileSync(cognitoState, 'utf8'));
+      if (state.resources && state.resources.length > 0) {
+        return; // Already deployed
+      }
+    } catch {
+      // Fall through to deploy
+    }
+  }
+
+  console.log('Deploying persistent Cognito user pool (required by provider infrastructure)...');
+  runTerraform(cognitoDir, 'init');
+  runTerraform(cognitoDir, 'apply');
+}
+
 module.exports = {
   runTerraform,
   getTerraformOutputJson,
@@ -238,5 +375,8 @@ module.exports = {
   getAwsAccountId,
   getVpcIdFromState,
   waitForInstancesTerminated,
-  cleanupVpcNetworkInterfaces
+  cleanupVpcNetworkInterfaces,
+  cleanupVpcSecurityGroups,
+  importOrphanedVpcResources,
+  ensureCognitoDeployed
 };

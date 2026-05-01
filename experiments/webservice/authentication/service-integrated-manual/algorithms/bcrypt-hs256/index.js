@@ -5,16 +5,11 @@ const JWT_SECRET = process.env.JWT_SECRET || 'befaas-default-secret-change-in-pr
 const fnName = process.env.BEFAAS_FN_NAME || 'unknownFn'
 const deploymentId = process.env.BEFAAS_DEPLOYMENT_ID || 'unknownDeploymentId'
 
-// Log auth timing in BEFAAS format
-// Using console.log instead of process.stdout.write because Lambda CloudWatch
-// captures console.log reliably but may not capture raw stdout writes
-function logAuthTiming(contextId, xPair, durationMs, success) {
+function logAuthTiming (contextId, xPair, durationMs, success) {
   console.log(
     'BEFAAS' +
       JSON.stringify({
         timestamp: new Date().getTime(),
-        now: performance.now(),
-        deploymentId,
         fn: { name: fnName },
         event: {
           contextId,
@@ -28,16 +23,7 @@ function logAuthTiming(contextId, xPair, durationMs, success) {
   )
 }
 
-/**
- * Verifies a JWT token from the Authorization header.
- * Uses manual JWT verification with jsonwebtoken library.
- *
- * @param {Object} event - The event object containing headers
- * @param {string} contextId - The context ID for logging (session ID)
- * @param {string} xPair - The xPair ID for request/response correlation
- * @returns {Object|false} - Returns the decoded payload if valid, false otherwise
- */
-async function verifyJWT(event, contextId, xPair) {
+async function verifyJWT (event, contextId, xPair) {
   const startTime = performance.now()
   // Use 'unknown' as fallback to ensure auth timing is always logged
   const logContextId = contextId || 'unknown'

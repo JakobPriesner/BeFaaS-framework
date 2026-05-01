@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 
 /**
- * Migrate existing users.csv to include precomputed bcrypt password hashes.
+ * Migrate existing users.csv to include precomputed password hashes.
  *
  * This script reads an existing users.csv (with userName,password columns)
  * and outputs a new CSV with an additional passwordHash column.
+ *
+ * Supports both bcrypt (for bcrypt-hs256) and argon2id (for argon2id-eddsa).
  *
  * Usage:
  *   node migrateUsers.js [options]
  *
  * Options:
- *   --input, -i     Input CSV file (default: users.csv)
- *   --output, -o    Output CSV file (default: users-migrated.csv)
- *   --rounds, -r    Bcrypt rounds (default: 10)
- *   --force, -f     Overwrite output file if it exists
- *   --help, -h      Show help
+ *   --input, -i       Input CSV file (default: users.csv)
+ *   --output, -o      Output CSV file (default: users-migrated.csv)
+ *   --algorithm, -a   Hash algorithm: argon2id-eddsa or bcrypt-hs256 (default: argon2id-eddsa)
+ *   --rounds, -r      Bcrypt rounds, only for bcrypt-hs256 (default: 10)
+ *   --force, -f       Overwrite output file if it exists
+ *   --help, -h        Show help
  *
  * IMPORTANT: This script will NOT overwrite the input file.
  * Use --output to specify a different output file name.
@@ -22,6 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // Parse command line arguments
 function parseArgs() {
@@ -29,6 +33,7 @@ function parseArgs() {
   const config = {
     input: 'users.csv',
     output: 'users-migrated.csv',
+    algorithm: 'argon2id-eddsa',
     rounds: 10,
     force: false
   };
@@ -42,6 +47,10 @@ function parseArgs() {
       case '--output':
       case '-o':
         config.output = args[++i];
+        break;
+      case '--algorithm':
+      case '-a':
+        config.algorithm = args[++i];
         break;
       case '--rounds':
       case '-r':
@@ -65,19 +74,21 @@ function printUsage() {
   console.log(`
 Usage: node migrateUsers.js [options]
 
-Migrate existing users.csv to include precomputed bcrypt password hashes.
+Migrate existing users.csv to include precomputed password hashes.
 
 Options:
-  --input, -i     Input CSV file (default: users.csv)
-  --output, -o    Output CSV file (default: users-migrated.csv)
-  --rounds, -r    Bcrypt rounds (default: 10)
-  --force, -f     Overwrite output file if it exists
-  --help, -h      Show help
+  --input, -i       Input CSV file (default: users.csv)
+  --output, -o      Output CSV file (default: users-migrated.csv)
+  --algorithm, -a   Hash algorithm: argon2id-eddsa or bcrypt-hs256 (default: argon2id-eddsa)
+  --rounds, -r      Bcrypt rounds, only for bcrypt-hs256 (default: 10)
+  --force, -f       Overwrite output file if it exists
+  --help, -h        Show help
 
 Examples:
   node migrateUsers.js
-  node migrateUsers.js --input old-users.csv --output new-users.csv
-  node migrateUsers.js -i users.csv -o users-with-hashes.csv -r 12
+  node migrateUsers.js --algorithm argon2id-eddsa
+  node migrateUsers.js --algorithm bcrypt-hs256 --rounds 12
+  node migrateUsers.js -i users.csv -o users-with-hashes.csv -a bcrypt-hs256
 
 IMPORTANT: This script will NOT overwrite the input file.
 `);
@@ -109,8 +120,12 @@ function parseCSV(filePath) {
       };
 
       // Preserve existing hash if present
-      if (passwordHashIndex !== -1 && fields[passwordHashIndex]) {
-        user.passwordHash = fields[passwordHashIndex];
+      // passwordHash is last and may contain commas (argon2id format), so join remaining fields
+      if (passwordHashIndex !== -1 && fields.length > passwordHashIndex) {
+        const hash = fields.slice(passwordHashIndex).join(',').replace(/^"|"$/g, '');
+        if (hash) {
+          user.passwordHash = hash;
+        }
       }
 
       users.push(user);
@@ -121,9 +136,9 @@ function parseCSV(filePath) {
 }
 
 /**
- * Hash passwords in batches with progress reporting
+ * Hash passwords using bcrypt in batches with progress reporting
  */
-async function hashPasswordsBatch(passwords, rounds, onProgress) {
+async function hashBcryptBatch(passwords, rounds, onProgress) {
   const bcrypt = require('bcryptjs');
   const hashes = [];
   const batchSize = 100;
@@ -148,13 +163,58 @@ async function hashPasswordsBatch(passwords, rounds, onProgress) {
   return hashes;
 }
 
+/**
+ * Hash passwords using argon2id in batches with progress reporting
+ */
+async function hashArgon2idBatch(passwords, onProgress) {
+  const { argon2id } = require('hash-wasm');
+  const hashes = [];
+  const batchSize = 100;
+
+  for (let i = 0; i < passwords.length; i += batchSize) {
+    const batch = passwords.slice(i, i + batchSize);
+    for (const pwd of batch) {
+      const salt = new Uint8Array(16);
+      crypto.randomFillSync(salt);
+      const hash = await argon2id({
+        password: pwd,
+        salt,
+        parallelism: 1,
+        iterations: 3,
+        memorySize: 65536,
+        hashLength: 32,
+        outputType: 'encoded'
+      });
+      hashes.push(hash);
+    }
+
+    if (onProgress) {
+      onProgress(Math.min(i + batchSize, passwords.length), passwords.length);
+    }
+  }
+
+  return hashes;
+}
+
 async function migrateUsers(config) {
+  const algorithmLabel = config.algorithm === 'bcrypt-hs256' ? 'bcrypt' : 'argon2id';
+
   console.log('='.repeat(60));
-  console.log('  Migrating Users CSV with Bcrypt Hashes');
+  console.log(`  Migrating Users CSV with ${algorithmLabel} Hashes`);
   console.log('='.repeat(60));
   console.log(`\nInput:  ${config.input}`);
   console.log(`Output: ${config.output}`);
-  console.log(`Bcrypt rounds: ${config.rounds}`);
+  console.log(`Algorithm: ${config.algorithm}`);
+  if (config.algorithm === 'bcrypt-hs256') {
+    console.log(`Bcrypt rounds: ${config.rounds}`);
+  }
+
+  // Validate algorithm
+  if (!['argon2id-eddsa', 'bcrypt-hs256'].includes(config.algorithm)) {
+    console.error(`\nError: Unknown algorithm: ${config.algorithm}`);
+    console.error('Supported algorithms: argon2id-eddsa, bcrypt-hs256');
+    process.exit(1);
+  }
 
   // Safety check: don't overwrite input
   const inputPath = path.resolve(config.input);
@@ -194,16 +254,22 @@ async function migrateUsers(config) {
   console.log(`Users needing hash computation: ${usersNeedingHash.length}`);
 
   if (usersNeedingHash.length > 0) {
-    // Compute bcrypt hashes with progress
-    console.log('\nComputing bcrypt hashes (this may take a while)...');
+    console.log(`\nComputing ${algorithmLabel} hashes (this may take a while)...`);
     const startTime = Date.now();
 
     const passwords = usersNeedingHash.map(u => u.password);
-    const hashes = await hashPasswordsBatch(passwords, config.rounds, (current, total) => {
+    const onProgress = (current, total) => {
       const percent = Math.round(current / total * 100);
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       process.stdout.write(`\rProgress: ${current}/${total} (${percent}%) - ${elapsed}s`);
-    });
+    };
+
+    let hashes;
+    if (config.algorithm === 'bcrypt-hs256') {
+      hashes = await hashBcryptBatch(passwords, config.rounds, onProgress);
+    } else {
+      hashes = await hashArgon2idBatch(passwords, onProgress);
+    }
 
     console.log('\n');
 
@@ -222,7 +288,9 @@ async function migrateUsers(config) {
   console.log('\nWriting output CSV...');
   const csvRows = ['userName,password,passwordHash'];
   users.forEach(user => {
-    csvRows.push(`${user.userName},${user.password},${user.passwordHash}`);
+    // Quote passwordHash since argon2id hashes contain commas (e.g. m=65536,t=3,p=1)
+    const hash = user.passwordHash.includes(',') ? `"${user.passwordHash}"` : user.passwordHash;
+    csvRows.push(`${user.userName},${user.password},${hash}`);
   });
 
   fs.writeFileSync(config.output, csvRows.join('\n'));

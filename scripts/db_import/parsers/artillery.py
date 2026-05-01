@@ -105,6 +105,18 @@ def parse_artillery_log(
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
             for line in f:
+                # Handle CloudWatch JSON wrapper format:
+                # {"timestamp":...,"message":"BEFAAS{...}\n","logGroup":...}
+                # Extract the message field first, then apply BEFAAS regex
+                if line.lstrip().startswith('{') and '"message"' in line:
+                    try:
+                        log_entry = json.loads(line)
+                        message = log_entry.get('message', '')
+                        if 'BEFAAS' in message:
+                            line = message
+                    except json.JSONDecodeError:
+                        pass
+
                 # Look for BEFAAS events
                 match = BEFAAS_PATTERN.search(line)
                 if not match:

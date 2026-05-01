@@ -40,7 +40,8 @@ experiments (1) ──┬── (N) requests           # Client-side HTTP reques
                   ├── (1) pricing            # Aggregated cost data
                   ├── (N) pricing_components # Per-function/service costs
                   ├── (N) metrics_ecs        # ECS time-series metrics
-                  └── (N) metrics_alb        # ALB time-series metrics
+                  ├── (N) metrics_alb        # ALB time-series metrics
+                  └── (N) edge_auth_events   # Lambda@Edge BEFAAS-EDGE events (edge/edge-selective v2 only)
 
 CORRELATION KEYS
 ----------------
@@ -963,7 +964,7 @@ class Experiment(Base):
     )
     auth_strategy: Mapped[str] = mapped_column(
         String(50), nullable=False,
-        comment="Authentication method: 'none', 'service-integrated' (JWT in handler), 'service-integrated-manual', 'edge' (auth at gateway)"
+        comment="Authentication method: 'none', 'service-integrated' (JWT in handler), 'service-integrated-manual', 'edge' (auth at gateway), 'edge-selective' (Lambda@Edge only for protected paths)"
     )
     run_timestamp: Mapped[Optional[datetime]] = mapped_column(
         comment="When the experiment was executed, parsed from directory name timestamp"
@@ -998,6 +999,10 @@ class Experiment(Base):
     jwt_sign_algorithm: Mapped[Optional[str]] = mapped_column(
         String(50),
         comment="JWT signing algorithm: 'HS256' (legacy) or 'EdDSA' (current). Only for service-integrated-manual auth."
+    )
+    with_cloudfront: Mapped[Optional[bool]] = mapped_column(
+        Boolean, default=False,
+        comment="Whether CloudFront was deployed as passthrough proxy (--with-cloudfront flag). True for edge/edge-selective (implicit) and explicit proxy deployments."
     )
 
     # === From benchmark_configuration.json ===
@@ -1068,6 +1073,7 @@ class Experiment(Base):
     pricing_components: Mapped[List["PricingComponent"]] = relationship(back_populates="experiment", cascade="all, delete-orphan")
     metrics_ecs: Mapped[List["MetricsEcs"]] = relationship(back_populates="experiment", cascade="all, delete-orphan")
     metrics_alb: Mapped[List["MetricsAlb"]] = relationship(back_populates="experiment", cascade="all, delete-orphan")
+    edge_auth_events: Mapped[List["EdgeAuthEvent"]] = relationship(back_populates="experiment", cascade="all, delete-orphan")
 
 
 # =============================================================================
@@ -1231,6 +1237,7 @@ class Request(Base):
         Index("idx_req_latency", "experiment_id", "latency_ms"),
         # Composite indexes for JOIN optimization - performance improvement
         Index("idx_req_exp_xpair", "experiment_id", "x_pair"),
+        Index("idx_req_exp_context", "experiment_id", "context_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1453,6 +1460,7 @@ class HandlerEvent(Base):
         Index("idx_handler_exp_auth", "experiment_id", "auth_type"),
         # Composite indexes for JOIN optimization - performance improvement
         Index("idx_handler_exp_xpair", "experiment_id", "x_pair"),
+        Index("idx_handler_exp_context", "experiment_id", "context_id"),
         Index("idx_handler_exp_phase_idx", "experiment_id", "phase_index"),
     )
 
@@ -1630,6 +1638,7 @@ class RpcCall(Base):
         Index("idx_rpc_xpair", "x_pair"),
         # Composite indexes for JOIN optimization - performance improvement
         Index("idx_rpc_exp_xpair", "experiment_id", "x_pair"),
+        Index("idx_rpc_exp_context", "experiment_id", "context_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -2156,106 +2165,187 @@ class MetricsAlb(Base):
         comment="Count of server error responses (500-599)"
     )
 
-    active_connections: Mapped[Optional[int]] = mapped_column(
-        Integer,
-        comment="Number of active connections to the ALB"
-    )
-    healthy_hosts: Mapped[Optional[int]] = mapped_column(
-        SmallInteger,
-        comment="Number of healthy targets (ECS tasks) registered with the ALB"
-    )
-
     experiment: Mapped["Experiment"] = relationship(back_populates="metrics_alb")
 
 
 # =============================================================================
-# LLM ANALYSIS STORAGE
+# EDGE AUTH EVENTS (Lambda@Edge BEFAAS-EDGE instrumentation)
 # =============================================================================
 
-class LlmInsight(Base):
+class EdgeAuthEvent(Base):
     """
-    Compact storage for LLM analysis findings.
+    Structured events emitted by the edge-based authentication Lambda@Edge.
 
-    Categories: 'perf' (performance), 'cost', 'scale', 'error', 'rec' (recommendation)
+    ONLY POPULATED FOR 'edge' AND 'edge-selective' AUTH STRATEGIES, AND ONLY
+    FOR EXPERIMENTS RUN WITH THE v2 (RUNTIME-JWKS-FETCH) EDGE LAMBDA. The
+    legacy v1 variant (index.legacy-buildtime-jwks.js) emits no structured
+    logs; see evaluation/bedrohung_der_validität.tex for context.
 
-    Example usage:
-        INSERT INTO llm_insights (category, key, value, experiment_ids)
-        VALUES ('cost', 'cheapest_faas', 'faas_none_512MB has lowest cost at $0.02/hour', '[1,3,5]');
+    EVENT TYPES
+    -----------
+    - 'authCheck'            One row per viewer-request. `outcome` classifies:
+                             'success' (token verified + internal token signed),
+                             'publicPassthrough' (non-protected path, no token),
+                             'missingToken401' (protected path, no token),
+                             'invalidToken401' (token verification failed).
+                             Populates timing fields: total_ms, key_resolve_ms,
+                             crypto_verify_ms, sign_ms. The per-request path
+                             breakdown used for RQ2 edge-overhead analysis.
+    - 'jwksFetch'            Logged ONCE per successful JWKS download on a
+                             given execution-environment instance. `trigger`
+                             is 'cold' (first fetch) or 'unknownKid' (rotation
+                             refetch). Populates duration_ms, jwks_key_count,
+                             jwks_fetch_number, instance_age_ms.
+    - 'jwksFetchError'       Fetch failed (timeout, HTTP != 200, malformed).
+                             Populates duration_ms, error.
+    - 'jwksFetchPiggyback'   A concurrent caller joined an in-flight fetch.
+                             Populates trigger.
+    - 'jwksRefetchDebounced' An unknown kid was seen within the refetch debounce
+                             window (JWKS_MIN_REFETCH_INTERVAL_MS). Populates
+                             kid, since_last_ms.
+
+    JOIN KEYS
+    ---------
+    - instance_id correlates all events from a single Lambda@Edge execution
+      environment. Lets you reconstruct the per-instance JWKS-cache lifetime:
+      first authCheck on that instance triggered the cold fetch; subsequent
+      authChecks served from the cache.
+    - lambda_request_id (from CloudWatch REPORT lines) joins to the
+      lambda_executions table for edge functions.
+
+    THREE-MODE CACHE DISTRIBUTION (used in chapter 6.3)
+    ---------------------------------------------------
+    - 'cached'     authCheck with triggered_jwks_fetch=false AND instance
+                   already had a jwksFetch event before this request.
+    - 'warm'       authCheck where the same kid is already in the cache
+                   (distinguished from 'cached' only by instance age).
+    - 'cold fetch' authCheck with triggered_jwks_fetch=true.
+
+    Example query: fraction of requests that paid the JWKS fetch cost
+        SELECT
+            COUNT(*) FILTER (WHERE triggered_jwks_fetch) AS cold_count,
+            COUNT(*) AS total
+        FROM edge_auth_events
+        WHERE experiment_id = ? AND event_type = 'authCheck' AND outcome = 'success';
     """
-    __tablename__ = "llm_insights"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    category: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
-    key: Mapped[str] = mapped_column(String(50), nullable=False)
-    value: Mapped[str] = mapped_column(Text, nullable=False)
-    experiment_ids: Mapped[Optional[str]] = mapped_column(String(200))  # JSON array of IDs
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    confidence: Mapped[Optional[float]] = mapped_column(Float)  # 0-1 confidence score
-
-
-class LlmComparison(Base):
-    """
-    Structured A vs B comparisons between experiments.
-
-    Metrics: 'latency_p50', 'latency_p95', 'cost_per_req', 'error_rate', 'throughput', 'cold_start'
-
-    Example: exp_a=1 (faas_none) vs exp_b=2 (faas_auth), metric='latency_p95',
-             diff_pct=15.2 means B is 15.2% slower than A
-    """
-    __tablename__ = "llm_comparisons"
+    __tablename__ = "edge_auth_events"
     __table_args__ = (
-        Index("idx_cmp_exps", "exp_a_id", "exp_b_id"),
+        Index("idx_edge_exp", "experiment_id"),
+        Index("idx_edge_exp_event", "experiment_id", "event_type"),
+        Index("idx_edge_exp_outcome", "experiment_id", "outcome"),
+        Index("idx_edge_exp_instance", "experiment_id", "instance_id"),
+        Index("idx_edge_exp_ts", "experiment_id", "timestamp_ms"),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    exp_a_id: Mapped[int] = mapped_column(ForeignKey("experiments.id", ondelete="CASCADE"))
-    exp_b_id: Mapped[int] = mapped_column(ForeignKey("experiments.id", ondelete="CASCADE"))
-    metric: Mapped[str] = mapped_column(String(20), nullable=False)
-    val_a: Mapped[Optional[float]] = mapped_column(Float)
-    val_b: Mapped[Optional[float]] = mapped_column(Float)
-    diff_pct: Mapped[Optional[float]] = mapped_column(Float)  # (B-A)/A * 100
-    winner: Mapped[Optional[str]] = mapped_column(String(1))  # 'a', 'b', or 't' (tie)
-    note: Mapped[Optional[str]] = mapped_column(String(200))
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-
-
-class LlmRanking(Base):
-    """
-    Ranked lists of experiments by metric.
-
-    Metrics: 'latency_p50', 'latency_p95', 'cost_total', 'cost_per_req', 'throughput', 'reliability'
-    Scope: 'all', 'faas', 'ecs', 'auth_none', 'auth_integrated'
-    """
-    __tablename__ = "llm_rankings"
-    __table_args__ = (
-        UniqueConstraint("metric", "scope", "rank"),
-        Index("idx_rank_metric", "metric", "scope"),
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    experiment_id: Mapped[int] = mapped_column(
+        ForeignKey("experiments.id", ondelete="CASCADE"), nullable=False,
+        comment="Reference to parent experiment"
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    metric: Mapped[str] = mapped_column(String(20), nullable=False)
-    scope: Mapped[str] = mapped_column(String(20), nullable=False, default='all')
-    rank: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1 = best
-    experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id", ondelete="CASCADE"))
-    value: Mapped[Optional[float]] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-
-
-class LlmNote(Base):
-    """
-    Free-form notes attached to experiments.
-
-    Types: 'anomaly', 'finding', 'todo', 'summary'
-    """
-    __tablename__ = "llm_notes"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    experiment_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("experiments.id", ondelete="CASCADE"), index=True
+    # === Event identification ===
+    event_type: Mapped[str] = mapped_column(
+        String(30), nullable=False,
+        comment="'authCheck' | 'jwksFetch' | 'jwksFetchError' | 'jwksFetchPiggyback' | 'jwksRefetchDebounced'"
     )
-    note_type: Mapped[str] = mapped_column(String(10), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    instance_id: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        comment="Per-execution-environment random ID (12 hex chars). Correlates all events from one warm Lambda@Edge replica."
+    )
+    lambda_request_id: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        comment="AWS Lambda Request ID (joins with lambda_executions on edge Lambda)"
+    )
+
+    # === Timing ===
+    timestamp_ms: Mapped[int] = mapped_column(
+        BigInteger, nullable=False,
+        comment="Unix timestamp (ms) when the event was emitted (Lambda-side Date.now())"
+    )
+    relative_time_ms: Mapped[Optional[float]] = mapped_column(
+        Float,
+        comment="Milliseconds since benchmark start"
+    )
+    now_perf_ms: Mapped[Optional[float]] = mapped_column(
+        Float,
+        comment="performance.now() value on the Lambda at emit time. Only meaningful within a single invocation."
+    )
+
+    # === authCheck fields ===
+    uri: Mapped[Optional[str]] = mapped_column(
+        Text,
+        comment="authCheck: request URI (path + query)"
+    )
+    outcome: Mapped[Optional[str]] = mapped_column(
+        String(30),
+        comment="authCheck: 'success' | 'publicPassthrough' | 'missingToken401' | 'invalidToken401'"
+    )
+    total_ms: Mapped[Optional[float]] = mapped_column(
+        Float,
+        comment="authCheck: end-to-end Lambda handler duration (performance.now()-based, excludes cold-start init)"
+    )
+    key_resolve_ms: Mapped[Optional[float]] = mapped_column(
+        Float,
+        comment="authCheck success: time spent resolving the Cognito signing key (0 on cache hit, ~1500ms on cold fetch)"
+    )
+    crypto_verify_ms: Mapped[Optional[float]] = mapped_column(
+        Float,
+        comment="authCheck success: time spent in crypto.verify() for the Cognito RSA signature"
+    )
+    sign_ms: Mapped[Optional[float]] = mapped_column(
+        Float,
+        comment="authCheck success: time spent Ed25519-signing the internal token"
+    )
+    triggered_jwks_fetch: Mapped[Optional[bool]] = mapped_column(
+        Boolean,
+        comment="authCheck success: true iff this request caused a JWKS fetch (cold instance or rotation refetch). Used for the three-mode distribution analysis."
+    )
+    instance_age_ms: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        comment="Milliseconds since this Lambda@Edge replica was booted (0 on cold start, increases on warm invocations)"
+    )
+
+    # === jwksFetch / jwksFetchError / jwksFetchPiggyback / jwksRefetchDebounced ===
+    trigger: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        comment="jwksFetch/Piggyback: 'cold' (first fetch on this instance) or 'unknownKid' (rotation refetch)"
+    )
+    duration_ms: Mapped[Optional[float]] = mapped_column(
+        Float,
+        comment="jwksFetch(Error): wall-clock time of the HTTPS request to the Cognito JWKS endpoint"
+    )
+    jwks_fetch_number: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        comment="jwksFetch: monotonic counter (1 = first fetch on this instance, 2+ = rotation refetches)"
+    )
+    jwks_key_count: Mapped[Optional[int]] = mapped_column(
+        SmallInteger,
+        comment="jwksFetch: number of keys returned by Cognito (typically 2)"
+    )
+    kid: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        comment="jwksRefetchDebounced: the attacker-or-client-supplied kid that was rejected"
+    )
+    since_last_ms: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        comment="jwksRefetchDebounced: milliseconds since the previous JWKS fetch (less than JWKS_MIN_REFETCH_INTERVAL_MS = 5000)"
+    )
+    error: Mapped[Optional[str]] = mapped_column(
+        Text,
+        comment="jwksFetchError / authCheck(invalidToken401): error message"
+    )
+
+    # === Context enrichment (populated during import if possible) ===
+    phase_index: Mapped[Optional[int]] = mapped_column(
+        SmallInteger,
+        comment="Benchmark phase index the event falls into (from timestamp → phase_starts mapping)"
+    )
+    phase_name: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        comment="Benchmark phase name"
+    )
+
+    experiment: Mapped["Experiment"] = relationship(back_populates="edge_auth_events")
 
 
 # =============================================================================
@@ -2327,21 +2417,11 @@ def add_table_comments(engine):
             "ALB CloudWatch metrics time-series. ECS architectures only. "
             "Track request counts, response times, and HTTP status distribution."
         ),
-        "llm_insights": (
-            "LLM analysis storage. Categories: perf, cost, scale, error, rec. "
-            "Store findings like 'cheapest config is X' for later reference."
-        ),
-        "llm_comparisons": (
-            "A vs B experiment comparisons. Metrics: latency_p50/p95, cost_per_req, error_rate, throughput. "
-            "diff_pct shows % difference, winner is 'a', 'b', or 't' (tie)."
-        ),
-        "llm_rankings": (
-            "Ranked experiment lists by metric. rank=1 is best. "
-            "Scope filters: 'all', 'faas', 'ecs', 'auth_none', 'auth_integrated'."
-        ),
-        "llm_notes": (
-            "Free-form notes on experiments. Types: anomaly, finding, todo, summary. "
-            "experiment_id can be NULL for general notes."
+        "edge_auth_events": (
+            "Structured BEFAAS-EDGE events from the edge-based authentication Lambda@Edge. "
+            "Populated only for auth_strategy in ('edge','edge-selective') AND experiments using the v2 runtime-JWKS-fetch variant. "
+            "event_type: authCheck (per-request timing), jwksFetch (cache-fill), jwksFetchError, jwksFetchPiggyback, jwksRefetchDebounced. "
+            "Use triggered_jwks_fetch to classify requests into the cached/warm/cold three-mode distribution."
         ),
     }
 

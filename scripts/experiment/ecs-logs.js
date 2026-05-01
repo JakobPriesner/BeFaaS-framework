@@ -61,10 +61,10 @@ async function collectEcsLogs (config, outputDir, startTime, endTime) {
   const logsClient = new CloudWatchLogsClient({ region: awsRegion })
 
   // Determine log group prefixes to search
-  // Infrastructure uses /aws/ecs/{project_name}/{service_name} format
-  const logPrefixes = ['/aws/ecs/befaas']
+  // Infrastructure uses /aws/ecs/containerinsights/{project_name}-{arch}/performance format
+  const logPrefixes = ['/aws/ecs/containerinsights/befaas']
   if (runId) {
-    logPrefixes.unshift(`/aws/ecs/befaas-${runId}`)
+    logPrefixes.unshift(`/aws/ecs/containerinsights/befaas-${runId}`)
   }
 
   // Find all matching log groups
@@ -139,6 +139,7 @@ async function collectEcsLogs (config, outputDir, startTime, endTime) {
           logGroupName,
           startTime,
           endTime,
+          filterPattern: '?BEFAAS ?"REPORT RequestId"',
           nextToken,
           limit: 10000
         })
@@ -146,7 +147,7 @@ async function collectEcsLogs (config, outputDir, startTime, endTime) {
         const response = await logsClient.send(filterCommand)
         totalApiCalls++
 
-        // Stream events directly to file
+        // Stream matching events directly to file (filtered server-side)
         for (const event of response.events || []) {
           const jsonLine = JSON.stringify({
             timestamp: event.timestamp,

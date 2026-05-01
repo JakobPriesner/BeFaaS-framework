@@ -30,6 +30,14 @@ provider "aws" {
 
 locals {
   project_name = var.project_name
+
+  # Protected paths that require Lambda@Edge authentication in selective mode
+  # These correspond to PROTECTED_PATH_PATTERNS in edge-lambda/index.js
+  # but must match the actual URL structure (e.g., /frontend/cart for FaaS)
+  protected_paths = var.protected_paths
+
+  # Common forwarded_values configuration (reused across behaviors)
+  forwarded_headers = ["Authorization", "Content-Type", "Accept", "Origin", "Referer", "X-Requested-With", "X-BeFaaS-Edge-Processed", "X-BeFaaS-Edge-Subject"]
 }
 
 # -----------------------------------------------------------------------------
@@ -95,10 +103,11 @@ resource "aws_lambda_function" "edge_auth" {
 # -----------------------------------------------------------------------------
 
 resource "aws_cloudfront_distribution" "api" {
-  enabled         = true
-  is_ipv6_enabled = true
-  comment         = "${local.project_name} Edge Auth Distribution"
-  price_class     = "PriceClass_100" # Use only North America and Europe edge locations
+  enabled             = true
+  is_ipv6_enabled     = true
+  wait_for_deployment = false
+  comment             = "${local.project_name} Edge Auth Distribution${var.selective_edge_routing ? " (selective)" : ""}"
+  price_class         = "PriceClass_100" # Use only North America and Europe edge locations
 
   # Origin configuration (API Gateway or ALB)
   origin {
@@ -119,6 +128,45 @@ resource "aws_cloudfront_distribution" "api" {
     }
   }
 
+  # --- Ordered cache behaviors for protected paths (selective mode only) ---
+  # When selective_edge_routing is true, only these paths invoke Lambda@Edge.
+  # CloudFront evaluates ordered_cache_behavior in order before default_cache_behavior.
+  dynamic "ordered_cache_behavior" {
+    for_each = var.selective_edge_routing ? local.protected_paths : []
+
+    content {
+      path_pattern     = "${ordered_cache_behavior.value}*"
+      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods   = ["GET", "HEAD", "OPTIONS"]
+      target_origin_id = "origin"
+
+      forwarded_values {
+        query_string = true
+        headers      = local.forwarded_headers
+
+        cookies {
+          forward = "all"
+        }
+      }
+
+      viewer_protocol_policy = "https-only"
+      min_ttl                = 0
+      default_ttl            = 0
+      max_ttl                = 0
+      compress               = true
+
+      # Lambda@Edge for auth transformation (protected paths only)
+      lambda_function_association {
+        event_type   = "viewer-request"
+        lambda_arn   = aws_lambda_function.edge_auth.qualified_arn
+        include_body = true
+      }
+    }
+  }
+
+  # --- Default cache behavior ---
+  # In selective mode: NO Lambda@Edge (public paths pass through directly)
+  # In standard mode: ALL requests go through Lambda@Edge
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD", "OPTIONS"]
@@ -128,7 +176,7 @@ resource "aws_cloudfront_distribution" "api" {
     # Note: Do NOT forward Host header - API Gateway returns 403 if Host doesn't match its domain
     forwarded_values {
       query_string = true
-      headers      = ["Authorization", "Content-Type", "Accept", "Origin", "Referer", "X-Requested-With", "X-BeFaaS-Edge-Processed", "X-BeFaaS-Edge-Subject"]
+      headers      = local.forwarded_headers
 
       cookies {
         forward = "all"
@@ -141,11 +189,15 @@ resource "aws_cloudfront_distribution" "api" {
     max_ttl                = 0
     compress               = true
 
-    # Lambda@Edge for auth transformation
-    lambda_function_association {
-      event_type   = "viewer-request"
-      lambda_arn   = aws_lambda_function.edge_auth.qualified_arn
-      include_body = true
+    # Lambda@Edge: only in non-selective (standard) mode
+    dynamic "lambda_function_association" {
+      for_each = var.selective_edge_routing ? [] : [1]
+
+      content {
+        event_type   = "viewer-request"
+        lambda_arn   = aws_lambda_function.edge_auth.qualified_arn
+        include_body = true
+      }
     }
   }
 

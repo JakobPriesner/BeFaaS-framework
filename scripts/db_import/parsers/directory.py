@@ -24,6 +24,7 @@ class DirectoryMetadata:
     ram_in_mb: int
     cpu_in_vcpu: Optional[float]
     run_timestamp: Optional[datetime]
+    with_cloudfront: bool = False
 
 
 def parse_directory_name(path: Path) -> DirectoryMetadata:
@@ -71,14 +72,22 @@ def parse_directory_name(path: Path) -> DirectoryMetadata:
     architecture = parts[0] if parts else "unknown"
 
     # Parse auth strategy
-    # Known auth strategies: none, service-integrated, service-integrated-manual
+    # Known auth strategies: none, edge, edge-selective, service-integrated, service-integrated-manual
+    # Order matters: check longer/more-specific patterns first to avoid partial matches
     auth_strategy = "unknown"
     if '_none_' in name_without_ts:
         auth_strategy = "none"
+    elif '_edge-selective_' in name_without_ts:
+        auth_strategy = "edge-selective"
+    elif '_edge_' in name_without_ts:
+        auth_strategy = "edge"
     elif '_service-integrated-manual_' in name_without_ts:
         auth_strategy = "service-integrated-manual"
     elif '_service-integrated_' in name_without_ts:
         auth_strategy = "service-integrated"
+
+    # Detect --with-cloudfront flag (appears as _cf_ segment in directory name)
+    with_cloudfront = '_cf_' in name_without_ts
 
     # Parse hardware: RAM and CPU
     ram_in_mb = 0
@@ -102,4 +111,5 @@ def parse_directory_name(path: Path) -> DirectoryMetadata:
         ram_in_mb=ram_in_mb,
         cpu_in_vcpu=cpu_in_vcpu,
         run_timestamp=run_timestamp,
+        with_cloudfront=with_cloudfront,
     )

@@ -99,21 +99,31 @@ output "scaling_config" {
       memory_mb    = service.memory
       min_capacity = service_name == "frontend-service" ? var.min_capacity_frontend : var.min_capacity
       max_capacity = var.max_capacity
-      scaling_rules = merge(
-        {
-          cpu = {
-            target_value           = var.target_cpu_utilization
-            scale_in_cooldown_sec  = var.scale_in_cooldown
-            scale_out_cooldown_sec = var.scale_out_cooldown
-          }
-        },
-        service_name == "frontend-service" ? {
-          request_count = {
-            target_value           = var.target_request_count
-            scale_in_cooldown_sec  = var.scale_in_cooldown
-            scale_out_cooldown_sec = var.scale_out_cooldown
-          }
-        } : {}
+      scaling_rules = (
+        var.scaling_mode == "request_count" ? merge(
+          {
+            cpu = {
+              target_value           = var.target_cpu_utilization
+              scale_in_cooldown_sec  = var.scale_in_cooldown
+              scale_out_cooldown_sec = var.scale_out_cooldown
+            }
+          },
+          service_name == "frontend-service" ? {
+            request_count = {
+              target_value           = var.target_request_count
+              scale_in_cooldown_sec  = var.scale_in_cooldown
+              scale_out_cooldown_sec = var.scale_out_cooldown
+            }
+          } : {}
+        ) : var.scaling_mode == "latency" ? (
+          service_name == "frontend-service" ? {
+            latency = {
+              target_value           = var.target_response_time
+              scale_in_cooldown_sec  = var.scale_in_cooldown
+              scale_out_cooldown_sec = var.scale_out_cooldown
+            }
+          } : {}
+        ) : {}
       )
     }
   }

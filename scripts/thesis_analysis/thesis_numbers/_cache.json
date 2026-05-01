@@ -1,0 +1,1138 @@
+{
+  "numExperimentsTotal": {
+    "rendered": "334",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "numExperimentsUsable": {
+    "rendered": "306",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "numExperimentsExcluded": {
+    "rendered": "28",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "numRequestsTotal": {
+    "rendered": "111{,}3\\,Mio.",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "numRequestsBaseline": {
+    "rendered": "1{,}7\\,Mio.",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "trafficPctAnonymous": {
+    "rendered": "82{,}0\\,\\%",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "trafficPctAuthenticated": {
+    "rendered": "18{,}0\\,\\%",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasTwoFiveSixCognito": {
+    "rendered": "+207\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasTwoFiveSixCognito": {
+    "rendered": "+11\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasTwoFiveSixEdge": {
+    "rendered": "+65\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasTwoFiveSixEdge": {
+    "rendered": "+23\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasTwoFiveSixManualBcrypt": {
+    "rendered": "+279\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasTwoFiveSixManualBcrypt": {
+    "rendered": "-0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasFiveTwelveCognito": {
+    "rendered": "+108\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasFiveTwelveCognito": {
+    "rendered": "-1\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasFiveTwelveEdge": {
+    "rendered": "+118\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasFiveTwelveEdge": {
+    "rendered": "+28\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasFiveTwelveManualBcrypt": {
+    "rendered": "+82\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasFiveTwelveManualBcrypt": {
+    "rendered": "+1\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasTenTwentyFourCognito": {
+    "rendered": "+138\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasTenTwentyFourCognito": {
+    "rendered": "+2\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasTenTwentyFourEdge": {
+    "rendered": "+146\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasTenTwentyFourEdge": {
+    "rendered": "+16\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasTenTwentyFourManualBcrypt": {
+    "rendered": "+1\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasTenTwentyFourManualBcrypt": {
+    "rendered": "+0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasSeventeenSixtyNineCognito": {
+    "rendered": "+124\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasSeventeenSixtyNineCognito": {
+    "rendered": "+2\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineFaasSeventeenSixtyNineManualBcrypt": {
+    "rendered": "+28\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyFaasSeventeenSixtyNineManualBcrypt": {
+    "rendered": "+6\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsSCognito": {
+    "rendered": "+204\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsSCognito": {
+    "rendered": "+2\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsSEdge": {
+    "rendered": "+227\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsSEdge": {
+    "rendered": "+23\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsSManualBcrypt": {
+    "rendered": "+642\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsSManualBcrypt": {
+    "rendered": "+4\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsMCognito": {
+    "rendered": "-1\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsMCognito": {
+    "rendered": "-81\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsMEdge": {
+    "rendered": "+36\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsMEdge": {
+    "rendered": "-58\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsMManualBcrypt": {
+    "rendered": "-131\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsMManualBcrypt": {
+    "rendered": "-80\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsLCognito": {
+    "rendered": "+243\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsLCognito": {
+    "rendered": "+1\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsLEdge": {
+    "rendered": "+282\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsLEdge": {
+    "rendered": "+21\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsLManualBcrypt": {
+    "rendered": "+46\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsLManualBcrypt": {
+    "rendered": "+0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsXLCognito": {
+    "rendered": "+276\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsXLCognito": {
+    "rendered": "-0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMsXLManualBcrypt": {
+    "rendered": "+66\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMsXLManualBcrypt": {
+    "rendered": "+0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoSCognito": {
+    "rendered": "+308\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoSCognito": {
+    "rendered": "+0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoSManualBcrypt": {
+    "rendered": "+351\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoSManualBcrypt": {
+    "rendered": "+2\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoMCognito": {
+    "rendered": "+230\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoMCognito": {
+    "rendered": "-0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoMEdge": {
+    "rendered": "+318\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoMEdge": {
+    "rendered": "+23\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoMManualBcrypt": {
+    "rendered": "+149\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoMManualBcrypt": {
+    "rendered": "-0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoLCognito": {
+    "rendered": "+66\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoLCognito": {
+    "rendered": "-47\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoLEdge": {
+    "rendered": "+185\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoLEdge": {
+    "rendered": "-23\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoLManualBcrypt": {
+    "rendered": "-85\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoLManualBcrypt": {
+    "rendered": "-47\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoXLCognito": {
+    "rendered": "+286\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoXLCognito": {
+    "rendered": "+1\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPNineNineMonoXLManualBcrypt": {
+    "rendered": "+60\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAggDeltaPFiftyMonoXLManualBcrypt": {
+    "rendered": "+0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasTwoFiveSixCognito": {
+    "rendered": "+417\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasTwoFiveSixCognito": {
+    "rendered": "+234\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasTwoFiveSixEdge": {
+    "rendered": "+97\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasTwoFiveSixEdge": {
+    "rendered": "+173\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasTwoFiveSixManualBcrypt": {
+    "rendered": "+277\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasTwoFiveSixManualBcrypt": {
+    "rendered": "+158\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasFiveTwelveCognito": {
+    "rendered": "+150\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasFiveTwelveCognito": {
+    "rendered": "+124\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasFiveTwelveEdge": {
+    "rendered": "+149\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasFiveTwelveEdge": {
+    "rendered": "+121\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasFiveTwelveManualBcrypt": {
+    "rendered": "+67\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasFiveTwelveManualBcrypt": {
+    "rendered": "+92\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasTenTwentyFourCognito": {
+    "rendered": "+163\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasTenTwentyFourCognito": {
+    "rendered": "+121\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasTenTwentyFourEdge": {
+    "rendered": "+214\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasTenTwentyFourEdge": {
+    "rendered": "+96\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasTenTwentyFourManualBcrypt": {
+    "rendered": "+0\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasTenTwentyFourManualBcrypt": {
+    "rendered": "+85\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasSeventeenSixtyNineCognito": {
+    "rendered": "+142\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasSeventeenSixtyNineCognito": {
+    "rendered": "+128\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineFaasSeventeenSixtyNineManualBcrypt": {
+    "rendered": "+35\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyFaasSeventeenSixtyNineManualBcrypt": {
+    "rendered": "+79\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsSCognito": {
+    "rendered": "+251\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsSCognito": {
+    "rendered": "+58\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsSEdge": {
+    "rendered": "+261\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsSEdge": {
+    "rendered": "+35\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsSManualBcrypt": {
+    "rendered": "+679\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsSManualBcrypt": {
+    "rendered": "+55\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsMCognito": {
+    "rendered": "+329\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsMCognito": {
+    "rendered": "+62\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsMEdge": {
+    "rendered": "+370\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsMEdge": {
+    "rendered": "+38\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsMManualBcrypt": {
+    "rendered": "+185\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsMManualBcrypt": {
+    "rendered": "+24\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsLCognito": {
+    "rendered": "+296\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsLCognito": {
+    "rendered": "+47\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsLEdge": {
+    "rendered": "+345\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsLEdge": {
+    "rendered": "+29\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsLManualBcrypt": {
+    "rendered": "+66\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsLManualBcrypt": {
+    "rendered": "+8\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsXLCognito": {
+    "rendered": "+314\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsXLCognito": {
+    "rendered": "+42\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMsXLManualBcrypt": {
+    "rendered": "+68\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMsXLManualBcrypt": {
+    "rendered": "+10\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoSCognito": {
+    "rendered": "+383\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoSCognito": {
+    "rendered": "+53\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoSManualBcrypt": {
+    "rendered": "+585\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoSManualBcrypt": {
+    "rendered": "+8\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoMCognito": {
+    "rendered": "+280\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoMCognito": {
+    "rendered": "+39\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoMEdge": {
+    "rendered": "+353\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoMEdge": {
+    "rendered": "+24\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoMManualBcrypt": {
+    "rendered": "+163\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoMManualBcrypt": {
+    "rendered": "+2\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoLCognito": {
+    "rendered": "+272\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoLCognito": {
+    "rendered": "+44\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoLEdge": {
+    "rendered": "+393\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoLEdge": {
+    "rendered": "+25\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoLManualBcrypt": {
+    "rendered": "+53\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoLManualBcrypt": {
+    "rendered": "+4\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoXLCognito": {
+    "rendered": "+325\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoXLCognito": {
+    "rendered": "+41\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPNineNineMonoXLManualBcrypt": {
+    "rendered": "+62\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneAuthOnlyDeltaPFiftyMonoXLManualBcrypt": {
+    "rendered": "+2\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneManualDeltaPNineNineExclLoginMonoL": {
+    "rendered": "-45\\,ms",
+    "experiment_ids": [
+      30,
+      31,
+      33,
+      234,
+      240,
+      305,
+      312
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoMultiplicationRatioMean": {
+    "rendered": "3{,}18",
+    "experiment_ids": [
+      10,
+      30,
+      36,
+      42,
+      62,
+      64,
+      65,
+      70,
+      87,
+      120,
+      142,
+      143
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoMultiplicationRatioStd": {
+    "rendered": "0{,}15",
+    "experiment_ids": [
+      10,
+      30,
+      36,
+      42,
+      62,
+      64,
+      65,
+      70,
+      87,
+      120,
+      142,
+      143
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoMultiplicationRatioCIlow": {
+    "rendered": "3{,}03",
+    "experiment_ids": [
+      10,
+      30,
+      36,
+      42,
+      62,
+      64,
+      65,
+      70,
+      87,
+      120,
+      142,
+      143
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoMultiplicationRatioCIhigh": {
+    "rendered": "3{,}34",
+    "experiment_ids": [
+      10,
+      30,
+      36,
+      42,
+      62,
+      64,
+      65,
+      70,
+      87,
+      120,
+      142,
+      143
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoMultiplicationRatioCV": {
+    "rendered": "4{,}6\\,\\%",
+    "experiment_ids": [
+      10,
+      30,
+      36,
+      42,
+      62,
+      64,
+      65,
+      70,
+      87,
+      120,
+      142,
+      143
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoMultiplicationRatioN": {
+    "rendered": "6",
+    "experiment_ids": [
+      10,
+      30,
+      36,
+      42,
+      62,
+      64,
+      65,
+      70,
+      87,
+      120,
+      142,
+      143
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoCascadeMeanMsEdgeSMorning": {
+    "rendered": "17{,}6\\,\\%",
+    "experiment_ids": [
+      100,
+      101,
+      102
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoCascadeMinMsEdgeSMorning": {
+    "rendered": "13{,}6\\,\\%",
+    "experiment_ids": [
+      100,
+      101,
+      102
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoCascadeMaxMsEdgeSMorning": {
+    "rendered": "22{,}7\\,\\%",
+    "experiment_ids": [
+      100,
+      101,
+      102
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoCascadeMeanMsEdgeMMorning": {
+    "rendered": "0{,}2\\,\\%",
+    "experiment_ids": [
+      130
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoCascadeMeanMsEdgeLMorning": {
+    "rendered": "0{,}0\\,\\%",
+    "experiment_ids": [
+      135
+    ],
+    "rendered_extra": {}
+  },
+  "rqTwoCascadeMeanMsNoneSMorning": {
+    "rendered": "0{,}2\\,\\%",
+    "experiment_ids": [
+      72,
+      84,
+      98
+    ],
+    "rendered_extra": {}
+  },
+  "rqThreeExposureFaasDienstintegriert": {
+    "rendered": "17",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqThreeExposureMsDienstintegriert": {
+    "rendered": "2",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqThreeExposureMonoDienstintegriert": {
+    "rendered": "1",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqThreeExposureEdgeAll": {
+    "rendered": "1",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqThreeExposureRatioFaasEdge": {
+    "rendered": "17{,}0$\\times$",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorRateMsS": {
+    "rendered": "47{,}4\\,\\%",
+    "experiment_ids": [
+      56,
+      215,
+      228,
+      341,
+      358,
+      367
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorRateMsM": {
+    "rendered": "30{,}0\\,\\%",
+    "experiment_ids": [
+      59,
+      213,
+      342,
+      348,
+      359,
+      368
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorRateMsL": {
+    "rendered": "16{,}9\\,\\%",
+    "experiment_ids": [
+      61,
+      144,
+      331,
+      343,
+      360,
+      369
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorRateMsXL": {
+    "rendered": "18{,}9\\,\\%",
+    "experiment_ids": [
+      124,
+      140,
+      354,
+      374,
+      377
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorRateMonoS": {
+    "rendered": "54{,}1\\,\\%",
+    "experiment_ids": [
+      63,
+      176,
+      242,
+      252,
+      253,
+      344,
+      361,
+      370
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorRateMonoM": {
+    "rendered": "48{,}8\\,\\%",
+    "experiment_ids": [
+      68,
+      106,
+      107,
+      177,
+      345,
+      362,
+      371
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorRateMonoL": {
+    "rendered": "22{,}3\\,\\%",
+    "experiment_ids": [
+      66,
+      126,
+      178,
+      346,
+      363,
+      372
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorRateMonoXL": {
+    "rendered": "1{,}3\\,\\%",
+    "experiment_ids": [
+      67,
+      251,
+      375,
+      378
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorFaasFiveTwelve": {
+    "rendered": "0{,}6\\,\\%",
+    "experiment_ids": [
+      48,
+      60,
+      96,
+      285,
+      365
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorFaasTenTwentyFour": {
+    "rendered": "0{,}6\\,\\%",
+    "experiment_ids": [
+      41,
+      54,
+      366
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourArgonErrorFaasSeventeenSixtyNine": {
+    "rendered": "0{,}7\\,\\%",
+    "experiment_ids": [
+      128,
+      227,
+      373
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourEqualizeFactorNone": {
+    "rendered": "16{,}0$\\times$",
+    "experiment_ids": [
+      30,
+      36,
+      42,
+      120
+    ],
+    "rendered_extra": {}
+  },
+  "rqFourEqualizeFactorCognito": {
+    "rendered": "3{,}2$\\times$",
+    "experiment_ids": [
+      30,
+      36,
+      42,
+      120
+    ],
+    "rendered_extra": {}
+  },
+  "rqThreeReplayWindowRatio": {
+    "rendered": "80",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "trafficPctAuthMinAll": {
+    "rendered": "18{,}9\\,\\%",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "trafficPctAuthMaxAll": {
+    "rendered": "23{,}0\\,\\%",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "trafficPctAnonMinAll": {
+    "rendered": "77{,}0\\,\\%",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "trafficPctAnonMaxAll": {
+    "rendered": "81{,}1\\,\\%",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixNonePNineNineFaasFiveTwelve": {
+    "rendered": "298\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixCognitoPNineNineFaasFiveTwelve": {
+    "rendered": "407\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixCognitoPctFaasFiveTwelve": {
+    "rendered": "36{,}2\\,\\%",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixNonePNineNineMsL": {
+    "rendered": "59\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixCognitoPNineNineMsL": {
+    "rendered": "302\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixCognitoRatioMsL": {
+    "rendered": "5{,}13",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixNonePNineNineMonoL": {
+    "rendered": "179\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixCognitoPNineNineMonoL": {
+    "rendered": "245\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqFourDecisionMatrixManualBcryptPNineNineMonoL": {
+    "rendered": "94\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "numExperimentsFullPhases": {
+    "rendered": "243",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "numExperimentsPartialPhases": {
+    "rendered": "12",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneArchRatioNoneSmall": {
+    "rendered": "20{,}5$\\times$",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneArchRatioNoneLarge": {
+    "rendered": "4{,}8$\\times$",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneArchRatioCognitoSmall": {
+    "rendered": "2{,}0$\\times$",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneArchRatioCognitoLarge": {
+    "rendered": "1{,}7$\\times$",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqTwoPerEndpointDeltaPFiftyMin": {
+    "rendered": "+26\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqTwoPerEndpointDeltaPFiftyMax": {
+    "rendered": "+123\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneEdgeNetworkOverheadMin": {
+    "rendered": "+16\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  },
+  "rqOneEdgeNetworkOverheadMax": {
+    "rendered": "+28\\,ms",
+    "experiment_ids": [],
+    "rendered_extra": {}
+  }
+}

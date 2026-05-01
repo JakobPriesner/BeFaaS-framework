@@ -59,14 +59,6 @@ for provider in $providers; do
     fi
 done
 
-# Collect Cognito authentication logs if Cognito is being used
-echo "Collecting Cognito authentication logs..." | chalk cyan
-if [ -f "${SCRIPT_DIR}/logs/cognito.sh" ]; then
-    ${SCRIPT_DIR}/logs/cognito.sh "experiments/${1}/$exp_json" || echo "Warning: cognito.sh failed" | chalk yellow
-else
-    echo "Warning: ${SCRIPT_DIR}/logs/cognito.sh not found" | chalk yellow
-fi
-
 # obtain artillery logs
 artillery_logs="$artillery_dir/workload-deploy.log"
 if [ -f "$artillery_logs" ]; then

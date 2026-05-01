@@ -1,36 +1,31 @@
-/**
- * Lambda@Edge Function for Edge-based Authentication
- *
- * This function runs at CloudFront edge locations and:
- * 1. Validates incoming Cognito JWT tokens
- * 2. Transforms them to short-lived internal tokens
- * 3. Signs internal tokens with Ed25519
- *
- * Constraints:
- * - Max 5s timeout (viewer-request)
- * - Max 1 MB package size
- * - No VPC access
- * - Must be deployed in us-east-1
- */
 
 const crypto = require('crypto');
+const https = require('https');
+const { performance } = require('perf_hooks');
 
-// These are embedded at build time
-const COGNITO_JWKS = process.env.COGNITO_JWKS ? JSON.parse(process.env.COGNITO_JWKS) : null;
+const COGNITO_JWKS_URL = process.env.COGNITO_JWKS_URL;
 const EDGE_PRIVATE_KEY = process.env.EDGE_PRIVATE_KEY;
 const COGNITO_ISSUER = process.env.COGNITO_ISSUER;
 const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID;
 
-// Configuration
-const INTERNAL_TOKEN_TTL_SECONDS = 45; // Short-lived (paper: 30-60 seconds)
+const INTERNAL_TOKEN_TTL_SECONDS = 45;
 const INTERNAL_ISSUER = 'edge-auth-service';
 const INTERNAL_AUDIENCE = 'internal-services';
+const JWKS_FETCH_TIMEOUT_MS = 1500;
+const JWKS_MIN_REFETCH_INTERVAL_MS = 5000;
 
-/**
- * Protected path patterns that require authentication at the edge
- * These paths will return 401 if no valid token is provided
- * Patterns are matched at the end of the URI path (after any prefix like /frontend/)
- */
+const INSTANCE_ID = crypto.randomBytes(6).toString('hex');
+const INSTANCE_BOOT_MS = Date.now();
+
+function logEdge (fields) {
+  console.log('BEFAAS-EDGE' + JSON.stringify({
+    timestamp: Date.now(),
+    now: performance.now(),
+    instanceId: INSTANCE_ID,
+    ...fields
+  }));
+}
+
 const PROTECTED_PATH_PATTERNS = [
   '/cart',
   '/addCartItem',
@@ -38,17 +33,9 @@ const PROTECTED_PATH_PATTERNS = [
   '/checkout'
 ];
 
-/**
- * Check if a path requires authentication
- * @param {string} uri - The request URI
- * @returns {boolean} - True if path requires auth
- */
-function requiresAuth(uri) {
-  // Normalize URI - extract path without query string
+function requiresAuth (uri) {
   const path = uri.split('?')[0];
 
-  // Segment-aware matching: split path into segments and check if any
-  // segment matches a protected pattern (without leading slash)
   const segments = path.split('/').filter(Boolean);
   return PROTECTED_PATH_PATTERNS.some(pattern => {
     const patternSegment = pattern.replace(/^\//, '');
@@ -56,20 +43,14 @@ function requiresAuth(uri) {
   });
 }
 
-/**
- * Base64URL encode
- */
-function base64UrlEncode(buffer) {
+function base64UrlEncode (buffer) {
   return buffer.toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
 }
 
-/**
- * Base64URL decode
- */
-function base64UrlDecode(str) {
+function base64UrlDecode (str) {
   const pad = str.length % 4;
   if (pad) {
     str += '='.repeat(4 - pad);
@@ -78,47 +59,96 @@ function base64UrlDecode(str) {
   return Buffer.from(str, 'base64');
 }
 
-/**
- * Generate 128-bit random request_id (hex-encoded)
- */
-function generateRequestId() {
+function generateRequestId () {
   return crypto.randomBytes(16).toString('hex');
 }
 
-/**
- * Hash client IP for origin_hash (SHA-256, truncated to 16 chars)
- */
-function hashOrigin(clientIp) {
-  const hash = crypto.createHash('sha256').update(clientIp).digest('hex');
-  return hash.substring(0, 16);
-}
-
-// Cache for JWK kid → KeyObject (Cognito typically has 2 keys)
 const jwkKeyCache = new Map();
+let jwksLastFetchMs = 0;
+let jwksFetchCount = 0;
+let jwksInflight = null;
 
-/**
- * Convert RSA JWK to a Node.js KeyObject for verification.
- * Caches by kid to avoid recreating on every request.
- */
-function jwkToPublicKey(jwk) {
-  if (jwk.kid && jwkKeyCache.has(jwk.kid)) {
-    return jwkKeyCache.get(jwk.kid);
+function fetchJwks (trigger) {
+  if (jwksInflight) {
+    logEdge({ event: 'jwksFetchPiggyback', trigger });
+    return jwksInflight;
   }
-  const keyObject = crypto.createPublicKey({ key: jwk, format: 'jwk' });
-  if (jwk.kid) {
-    jwkKeyCache.set(jwk.kid, keyObject);
-  }
-  return keyObject;
+
+  const fetchStart = performance.now();
+  jwksInflight = new Promise((resolve, reject) => {
+    const req = https.get(COGNITO_JWKS_URL, { timeout: JWKS_FETCH_TIMEOUT_MS }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`JWKS fetch failed: HTTP ${res.statusCode}`));
+      }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const jwks = JSON.parse(body);
+          if (!jwks || !Array.isArray(jwks.keys)) {
+            return reject(new Error('JWKS response malformed'));
+          }
+          jwkKeyCache.clear();
+          for (const jwk of jwks.keys) {
+            if (!jwk.kid) continue;
+            jwkKeyCache.set(jwk.kid, crypto.createPublicKey({ key: jwk, format: 'jwk' }));
+          }
+          jwksLastFetchMs = Date.now();
+          jwksFetchCount += 1;
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy(new Error(`JWKS fetch timed out after ${JWKS_FETCH_TIMEOUT_MS} ms`));
+    });
+    req.on('error', reject);
+  }).then(() => {
+    logEdge({
+      event: 'jwksFetch',
+      trigger,
+      fetchNumber: jwksFetchCount,
+      durationMs: performance.now() - fetchStart,
+      keyCount: jwkKeyCache.size,
+      instanceAgeMs: Date.now() - INSTANCE_BOOT_MS
+    });
+  }, (err) => {
+    logEdge({
+      event: 'jwksFetchError',
+      trigger,
+      durationMs: performance.now() - fetchStart,
+      error: err.message
+    });
+    throw err;
+  }).finally(() => {
+    jwksInflight = null;
+  });
+
+  return jwksInflight;
 }
 
-/**
- * Verify Cognito JWT token
- */
-function verifyCognitoToken(token) {
-  if (!COGNITO_JWKS || !COGNITO_JWKS.keys) {
-    throw new Error('JWKS not configured');
+async function getSigningKey (kid) {
+  if (jwkKeyCache.has(kid)) {
+    return jwkKeyCache.get(kid);
   }
+  const trigger = jwksLastFetchMs === 0 ? 'cold' : 'unknownKid';
+  const sinceLast = Date.now() - jwksLastFetchMs;
+  if (sinceLast < JWKS_MIN_REFETCH_INTERVAL_MS && jwksLastFetchMs !== 0) {
+    logEdge({ event: 'jwksRefetchDebounced', kid, sinceLastMs: sinceLast });
+    throw new Error(`Key ${kid} not found in JWKS`);
+  }
+  await fetchJwks(trigger);
+  if (jwkKeyCache.has(kid)) {
+    return jwkKeyCache.get(kid);
+  }
+  throw new Error(`Key ${kid} not found in JWKS`);
+}
 
+async function verifyCognitoToken (token) {
   const parts = token.split('.');
   if (parts.length !== 3) {
     throw new Error('Invalid JWT format');
@@ -130,34 +160,29 @@ function verifyCognitoToken(token) {
   const header = JSON.parse(base64UrlDecode(headerB64).toString());
   const payload = JSON.parse(base64UrlDecode(payloadB64).toString());
 
-  // Check expiration
   const now = Math.floor(Date.now() / 1000);
   if (payload.exp && payload.exp < now - 5) {
     throw new Error('Token expired');
   }
 
-  // Validate token_use claim (must be an access token)
+  // Validate token_use claim
   if (payload.token_use !== 'access') {
     throw new Error('Invalid token_use: expected access token');
   }
 
-  // Validate issuer
   if (COGNITO_ISSUER && payload.iss !== COGNITO_ISSUER) {
     throw new Error('Invalid issuer');
   }
 
-  // Validate client_id (access tokens use 'client_id' claim)
   if (COGNITO_CLIENT_ID && payload.client_id !== COGNITO_CLIENT_ID) {
     throw new Error('Invalid client_id');
   }
 
-  // Find matching key in JWKS
-  const key = COGNITO_JWKS.keys.find(k => k.kid === header.kid);
-  if (!key) {
-    throw new Error(`Key ${header.kid} not found in JWKS`);
-  }
+  // Resolve signing key from runtime JWKS cache (fetches on cold/unknown kid)
+  const keyResolveStart = performance.now();
+  const publicKey = await getSigningKey(header.kid);
+  const keyResolveMs = performance.now() - keyResolveStart;
 
-  // Verify signature
   const signingInput = `${headerB64}.${payloadB64}`;
   const signature = base64UrlDecode(signatureB64);
 
@@ -176,25 +201,26 @@ function verifyCognitoToken(token) {
       throw new Error(`Unsupported algorithm: ${header.alg}`);
   }
 
-  const publicKey = jwkToPublicKey(key);
+  const cryptoVerifyStart = performance.now();
   const isValid = crypto.verify(
     algorithm,
     Buffer.from(signingInput),
     publicKey,
     signature
   );
+  const cryptoVerifyMs = performance.now() - cryptoVerifyStart;
 
   if (!isValid) {
     throw new Error('Invalid signature');
   }
 
-  return payload;
+  return { payload, phases: { keyResolveMs, cryptoVerifyMs } };
 }
 
-// Cache the Ed25519 private key (imported once at module scope)
+// Cache the Ed25519 private key
 let cachedPrivateKey = null;
 
-function getPrivateKey() {
+function getPrivateKey () {
   if (cachedPrivateKey) return cachedPrivateKey;
   if (!EDGE_PRIVATE_KEY) {
     throw new Error('EDGE_PRIVATE_KEY not configured');
@@ -208,10 +234,7 @@ function getPrivateKey() {
   return cachedPrivateKey;
 }
 
-/**
- * Sign internal token with Ed25519
- */
-function signInternalToken(payload) {
+function signInternalToken (payload) {
   const privateKey = getPrivateKey();
 
   // Create JWT header
@@ -227,10 +250,7 @@ function signInternalToken(payload) {
   return `${signingInput}.${signatureB64}`;
 }
 
-/**
- * Create internal token from external token payload
- */
-function createInternalToken(externalPayload, clientIp) {
+function createInternalToken (externalPayload) {
   const now = Math.floor(Date.now() / 1000);
 
   const internalPayload = {
@@ -239,30 +259,30 @@ function createInternalToken(externalPayload, clientIp) {
     aud: INTERNAL_AUDIENCE,
     exp: now + INTERNAL_TOKEN_TTL_SECONDS,
     iat: now,
-    request_id: generateRequestId(),
-    origin_hash: hashOrigin(clientIp || '0.0.0.0')
+    request_id: generateRequestId()
   };
 
   return signInternalToken(internalPayload);
 }
 
-/**
- * Lambda@Edge handler for viewer-request event
- */
 exports.handler = async (event) => {
+  const handlerStart = performance.now();
   const request = event.Records[0].cf.request;
   const headers = request.headers;
   const uri = request.uri;
 
-  // Extract Authorization header
   const authHeaderArray = headers.authorization || headers.Authorization;
   const authHeader = authHeaderArray?.[0]?.value;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // No auth header - check if this is a protected endpoint
     if (requiresAuth(uri)) {
-      // Protected endpoint without auth - return 401 immediately
       console.error(`Edge auth: Protected endpoint ${uri} accessed without token`);
+      logEdge({
+        event: 'authCheck',
+        uri,
+        outcome: 'missingToken401',
+        totalMs: performance.now() - handlerStart
+      });
       return {
         status: '401',
         statusDescription: 'Unauthorized',
@@ -278,54 +298,76 @@ exports.handler = async (event) => {
       };
     }
 
-    // Public endpoint - pass through without auth
-    // Add marker that request was processed by edge (for logging)
-    // Note: X-Edge-* headers are reserved by CloudFront, use X-BeFaaS-* instead
     request.headers['x-befaas-edge-processed'] = [{
       key: 'X-BeFaaS-Edge-Processed',
       value: 'passthrough'
     }];
+
+    logEdge({
+      event: 'authCheck',
+      uri,
+      outcome: 'publicPassthrough',
+      totalMs: performance.now() - handlerStart
+    });
     return request;
   }
 
   const externalToken = authHeader.replace('Bearer ', '');
 
   try {
-    // 1. Verify external token (Cognito JWT)
-    const externalPayload = verifyCognitoToken(externalToken);
+    // 1. Verify external token (Cognito JWT).
+    const jwksFetchCountBefore = jwksFetchCount;
+    const { payload: externalPayload, phases } = await verifyCognitoToken(externalToken);
+    const triggeredJwksFetch = jwksFetchCount > jwksFetchCountBefore;
 
-    // 2. Extract client IP for origin_hash
-    const clientIp = request.clientIp || '0.0.0.0';
+    // 2. Create and sign internal token (Ed25519).
+    const signStart = performance.now();
+    const internalToken = createInternalToken(externalPayload);
+    const signMs = performance.now() - signStart;
 
-    // 3. Create and sign internal token
-    const internalToken = createInternalToken(externalPayload, clientIp);
-
-    // 4. Replace Authorization header with internal token
+    // 3. Replace Authorization header with internal token
     request.headers.authorization = [{
       key: 'Authorization',
       value: `Bearer ${internalToken}`
     }];
 
-    // 5. Add edge processing marker
-    // Note: X-Edge-* headers are reserved by CloudFront, use X-BeFaaS-* instead
+    // 4. Add edge processing marker
     request.headers['x-befaas-edge-processed'] = [{
       key: 'X-BeFaaS-Edge-Processed',
       value: 'true'
     }];
 
-    // 6. Add original subject for logging (truncated)
+    // 5. Add original subject for logging
     const sub = externalPayload.sub || externalPayload.username || 'unknown';
     request.headers['x-befaas-edge-subject'] = [{
       key: 'X-BeFaaS-Edge-Subject',
       value: sub.substring(0, 36)
     }];
 
+    const totalMs = performance.now() - handlerStart;
+    logEdge({
+      event: 'authCheck',
+      uri,
+      outcome: 'success',
+      totalMs,
+      keyResolveMs: phases.keyResolveMs,
+      cryptoVerifyMs: phases.cryptoVerifyMs,
+      signMs,
+      triggeredJwksFetch,
+      instanceAgeMs: Date.now() - INSTANCE_BOOT_MS
+    });
+
     return request;
 
   } catch (error) {
-    // Token validation failed - return 401
-    // Log full error for debugging but don't expose details to clients
     console.error('Edge auth error:', error.message);
+    logEdge({
+      event: 'authCheck',
+      uri,
+      outcome: 'invalidToken401',
+      totalMs: performance.now() - handlerStart,
+      error: error.message
+    });
 
     return {
       status: '401',

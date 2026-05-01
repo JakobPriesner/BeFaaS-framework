@@ -1,22 +1,9 @@
-# Cognito User Pool for service-integrated authentication
-#
-# By default, uses a persistent Cognito pool from infrastructure/services/cognito
-# to preserve users across experiment runs.
-#
-# To use the persistent pool:
-#   1. Deploy it first: cd infrastructure/services/cognito && terraform init && terraform apply
-#   2. Set use_persistent_cognito = true (default)
-#
-# To create a new pool per experiment (old behavior):
-#   Set use_persistent_cognito = false
-
 variable "use_persistent_cognito" {
   description = "Use persistent Cognito pool from services/cognito instead of creating new one"
   type        = bool
   default     = true
 }
 
-# Reference to persistent Cognito pool (when use_persistent_cognito = true)
 data "terraform_remote_state" "cognito" {
   count   = var.use_persistent_cognito ? 1 : 0
   backend = "local"
@@ -83,7 +70,6 @@ resource "aws_cognito_user_pool_domain" "main" {
   user_pool_id = aws_cognito_user_pool.main[0].id
 }
 
-# Local values to select between persistent and per-experiment Cognito
 locals {
   cognito_user_pool_id       = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_user_pool_id : aws_cognito_user_pool.main[0].id
   cognito_client_id          = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_client_id : aws_cognito_user_pool_client.main[0].id
@@ -92,7 +78,6 @@ locals {
   cognito_domain             = var.use_persistent_cognito ? data.terraform_remote_state.cognito[0].outputs.cognito_domain : aws_cognito_user_pool_domain.main[0].domain
 }
 
-# Outputs
 output "cognito_user_pool_id" {
   description = "Cognito User Pool ID"
   value       = local.cognito_user_pool_id

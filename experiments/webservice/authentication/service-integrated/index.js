@@ -6,10 +6,7 @@ const clientId = process.env.COGNITO_CLIENT_ID;
 const fnName = process.env.BEFAAS_FN_NAME || 'unknownFn';
 const deploymentId = process.env.BEFAAS_DEPLOYMENT_ID || 'unknownDeploymentId';
 
-// Log auth timing in BEFAAS format
-// Using console.log instead of process.stdout.write because Lambda CloudWatch
-// captures console.log reliably but may not capture raw stdout writes
-function logAuthTiming(contextId, durationMs, success) {
+function logAuthTiming (contextId, durationMs, success) {
   console.log(
     'BEFAAS' +
       JSON.stringify({
@@ -28,9 +25,8 @@ function logAuthTiming(contextId, durationMs, success) {
   );
 }
 
-async function verifyJWT(event, contextId) {
+async function verifyJWT (event, contextId) {
   const startTime = performance.now();
-  // Use 'unknown' as fallback contextId to ensure auth timing is always logged
   const logContextId = contextId || 'unknown';
 
   try {
@@ -47,7 +43,7 @@ async function verifyJWT(event, contextId) {
     const verifier = CognitoJwtVerifier.create({
       userPoolId,
       tokenUse: 'access',
-      clientId,
+      clientId
     });
 
     const payload = await verifier.verify(token);

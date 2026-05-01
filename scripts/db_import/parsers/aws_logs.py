@@ -91,7 +91,10 @@ REPORT_PATTERN = re.compile(
     r'(?:\s+Init Duration: ([\d.]+) ms)?'
 )
 
-BEFAAS_PATTERN = re.compile(r'BEFAAS: (\{.+\})')
+# Match backend BEFAAS lines only. The negative lookahead `(?!-EDGE)` excludes
+# BEFAAS-EDGE{...} lines emitted by the Lambda@Edge auth function; those are
+# parsed separately by parsers/edge_logs.py with a dedicated event schema.
+BEFAAS_PATTERN = re.compile(r'BEFAAS(?!-EDGE):?\s*(\{.+\})')
 
 # Extract request ID from Lambda log message format
 # Format: "2026-01-09T22:57:26.307Z\tb9fb9c29-4dd5-4dd1-ab87-14ba471891e2\tINFO\tBEFAAS: {...}"
@@ -185,7 +188,17 @@ def parse_aws_log(
                         continue
 
                     fn_info = befaas_data.get('fn', {})
-                    function_name = fn_info.get('name', _extract_function_name(log_group, fn_name_field))
+                    raw_fn_name = fn_info.get('name')
+                    # Fall back to serviceName/logGroup when fn.name is missing or generic
+                    if not raw_fn_name or raw_fn_name in ('unknown', 'unknownFn'):
+                        # ECS logs have serviceName in wrapper (e.g., "cart-service")
+                        service_name = log_entry.get('serviceName')
+                        if service_name:
+                            function_name = service_name
+                        else:
+                            function_name = _extract_function_name(log_group, fn_name_field)
+                    else:
+                        function_name = raw_fn_name
                     event = befaas_data.get('event', {})
                     event_ts = befaas_data.get('timestamp', timestamp)
                     deployment_id = befaas_data.get('deploymentId')

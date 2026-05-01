@@ -84,23 +84,12 @@ function validateEnvironment(experiment) {
     }
   }
 
-  // Detect and set Docker Hub user (with timeout to prevent hanging)
-  try {
-    const dockerInfo = execSync('docker info 2>/dev/null', {
-      encoding: 'utf8',
-      timeout: 10000  // 10 second timeout
-    });
-    const match = dockerInfo.match(/Username:\s+(.+)/);
-    if (match) {
-      process.env.TF_VAR_DOCKERHUB_USER = match[1].trim();
-      console.log(`✓ Docker Hub user: ${process.env.TF_VAR_DOCKERHUB_USER}`);
-    }
-  } catch (error) {
-    if (error.killed) {
-      console.log('⚠ Docker info timed out - Docker may be starting up');
-    } else {
-      console.log('⚠ Could not detect Docker Hub user');
-    }
+  // TF_VAR_DOCKERHUB_USER is only consumed by infrastructure/openfaas. Set it
+  // explicitly in the environment if using OpenFaaS — we no longer shell out
+  // to `docker info` here because Docker Desktop occasionally wedges and the
+  // CLI ignores SIGTERM, which blocked experiment startup indefinitely.
+  if (process.env.DOCKERHUB_USER && !process.env.TF_VAR_DOCKERHUB_USER) {
+    process.env.TF_VAR_DOCKERHUB_USER = process.env.DOCKERHUB_USER;
   }
 
   // Set Terraform config file (only if running in Docker container)
@@ -132,13 +121,53 @@ function setHardwareConfig(config) {
       process.env.TF_VAR_memory = config.memoryFargate.toString();
       console.log(`✓ Fargate memory configured: ${config.memoryFargate} MB`);
     }
+
+    // Scaling configuration
+    process.env.TF_VAR_scaling_mode = config.scalingMode;
+    process.env.TF_VAR_min_capacity = config.minCapacity.toString();
+    process.env.TF_VAR_max_capacity = config.maxCapacity.toString();
+    process.env.TF_VAR_scale_out_cooldown = config.scaleOutCooldown.toString();
+    process.env.TF_VAR_scale_in_cooldown = config.scaleInCooldown.toString();
+    process.env.TF_VAR_desired_count = config.desiredCount.toString();
+    process.env.TF_VAR_target_request_count = config.targetRequestCount.toString();
+    // Convert ms → seconds for Terraform (ALB TargetResponseTime metric is in seconds)
+    process.env.TF_VAR_target_response_time = (config.targetResponseTime / 1000).toString();
+
+    if (config.architecture === 'microservices') {
+      process.env.TF_VAR_min_capacity_frontend = config.minCapacityFrontend.toString();
+    }
+
+    console.log(`✓ Scaling mode: ${config.scalingMode}`);
+    console.log(`✓ Scaling capacity: min=${config.minCapacity}, max=${config.maxCapacity}, desired=${config.desiredCount}`);
+    if (config.scalingMode === 'latency') {
+      console.log(`✓ Target response time: ${config.targetResponseTime} ms`);
+    } else if (config.scalingMode === 'request_count') {
+      console.log(`✓ Target request count: ${config.targetRequestCount} req/target/min`);
+    }
+    console.log(`✓ Cooldowns: scale-out=${config.scaleOutCooldown}s, scale-in=${config.scaleInCooldown}s`);
   }
 }
 
-function installTerraformProviders() {
+function installTerraformProviders(experiment) {
   logSection('Installing Terraform Providers');
 
   const projectRoot = path.join(__dirname, '..', '..');
+
+  // Check if the experiment actually needs custom providers (openfaas, tinyfaas, openwhisk).
+  // These require building from source with Go and are only used for non-AWS platforms.
+  const customProviders = ['openfaas', 'tinyfaas', 'openwhisk'];
+  const experimentJsonPath = path.join(projectRoot, 'experiments', experiment, 'experiment.json');
+  if (fs.existsSync(experimentJsonPath)) {
+    const experimentConfig = JSON.parse(fs.readFileSync(experimentJsonPath, 'utf8'));
+    const neededProviders = getProvidersFromConfig(experimentConfig);
+    const neededCustom = neededProviders.filter(p => customProviders.includes(p));
+    if (neededCustom.length === 0) {
+      console.log('No custom Terraform providers needed for this experiment, skipping.');
+      return;
+    }
+    console.log(`Custom providers needed: ${neededCustom.join(', ')}`);
+  }
+
   const installScript = path.join(projectRoot, 'scripts', 'install-provider.sh');
 
   if (!fs.existsSync(installScript)) {

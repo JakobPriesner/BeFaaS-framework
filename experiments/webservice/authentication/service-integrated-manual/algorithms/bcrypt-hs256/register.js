@@ -2,26 +2,7 @@ const bcrypt = require('bcryptjs')
 
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS, 10) || 10
 
-/**
- * Register Service for 'service-integrated-manual' auth mode.
- * Stores user in Redis with bcrypt-hashed password.
- *
- * Ex Payload Body: {
- *   "userName": "testuser",
- *   "password": "TestPassword123!"
- * }
- *
- * Response on success: {
- *   "success": true,
- *   "message": "User registered successfully"
- * }
- *
- * Response on failure: {
- *   "success": false,
- *   "error": "..."
- * }
- */
-async function handle(event, ctx) {
+async function handle (event, ctx) {
   const { userName, password } = event
 
   if (!userName || !password) {

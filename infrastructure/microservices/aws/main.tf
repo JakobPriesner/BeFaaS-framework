@@ -72,35 +72,35 @@ locals {
       container_port = 3000
       cpu            = var.cpu
       memory         = var.memory
-      desired_count  = 1
+      desired_count  = var.desired_count
     }
     "product-service" = {
       port           = 3001
       container_port = 3001
       cpu            = var.cpu
       memory         = var.memory
-      desired_count  = 1
+      desired_count  = var.desired_count
     }
     "cart-service" = {
       port           = 3002
       container_port = 3002
       cpu            = var.cpu
       memory         = var.memory
-      desired_count  = 1
+      desired_count  = var.desired_count
     }
     "order-service" = {
       port           = 3003
       container_port = 3003
       cpu            = var.cpu
       memory         = var.memory
-      desired_count  = 1
+      desired_count  = var.desired_count
     }
     "content-service" = {
       port           = 3004
       container_port = 3004
       cpu            = var.cpu
       memory         = var.memory
-      desired_count  = 1
+      desired_count  = var.desired_count
     }
   }
 }
@@ -293,6 +293,10 @@ resource "aws_ecs_task_definition" "service" {
           value = each.key
         },
         {
+          name  = "BEFAAS_FN_NAME"
+          value = each.key
+        },
+        {
           name  = "PORT"
           value = tostring(each.value.container_port)
         },
@@ -423,9 +427,9 @@ resource "aws_appautoscaling_target" "service" {
   depends_on = [aws_ecs_service.service]
 }
 
-# Auto-Scaling Policies - Target Tracking on CPU (one per service)
+# Auto-Scaling Policies - Target Tracking on CPU (request_count mode only, one per service)
 resource "aws_appautoscaling_policy" "service_cpu" {
-  for_each = local.services
+  for_each = var.scaling_mode == "request_count" ? local.services : {}
 
   name               = "${local.project_name}-${each.key}-cpu-scaling"
   policy_type        = "TargetTrackingScaling"
@@ -440,18 +444,15 @@ resource "aws_appautoscaling_policy" "service_cpu" {
 
     target_value = var.target_cpu_utilization
 
-    # Scale-out cooldown: 45s (Fast Response)
     scale_out_cooldown = var.scale_out_cooldown
-
-    # Scale-in cooldown: 180s (Slow Shrinkage)
-    # Verhältnis T_in/T_out = 180/45 = 4.0 (meets minimum requirement)
-    scale_in_cooldown = var.scale_in_cooldown
+    scale_in_cooldown  = var.scale_in_cooldown
   }
 }
 
-# Auto-Scaling Policy - Target Tracking on ALB Request Count (frontend-service only)
-# This enables proactive scaling based on incoming request rate before CPU becomes a bottleneck
+# Auto-Scaling Policy - Target Tracking on ALB Request Count (request_count mode, frontend-service only)
 resource "aws_appautoscaling_policy" "frontend_requests" {
+  count = var.scaling_mode == "request_count" ? 1 : 0
+
   name               = "${local.project_name}-frontend-service-request-scaling"
   policy_type        = "TargetTrackingScaling"
   resource_id        = aws_appautoscaling_target.service["frontend-service"].resource_id
@@ -466,7 +467,35 @@ resource "aws_appautoscaling_policy" "frontend_requests" {
 
     target_value = var.target_request_count
 
-    # Use same cooldown as CPU scaling for consistency
+    scale_out_cooldown = var.scale_out_cooldown
+    scale_in_cooldown  = var.scale_in_cooldown
+  }
+}
+
+# Auto-Scaling Policy - Target Tracking on ALB Response Time (latency mode, frontend-service only)
+resource "aws_appautoscaling_policy" "frontend_latency" {
+  count = var.scaling_mode == "latency" ? 1 : 0
+
+  name               = "${local.project_name}-frontend-service-latency-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.service["frontend-service"].resource_id
+  scalable_dimension = aws_appautoscaling_target.service["frontend-service"].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.service["frontend-service"].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    customized_metric_specification {
+      metric_name = "TargetResponseTime"
+      namespace   = "AWS/ApplicationELB"
+      statistic   = "Average"
+
+      dimensions {
+        name  = "LoadBalancer"
+        value = aws_lb.microservices.arn_suffix
+      }
+    }
+
+    target_value = var.target_response_time
+
     scale_out_cooldown = var.scale_out_cooldown
     scale_in_cooldown  = var.scale_in_cooldown
   }

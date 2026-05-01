@@ -1,4 +1,3 @@
-// Exchange rates never change in the real world, so this is ok.
 const EUR_RATES = {
   EUR: 1.0,
   CAD: 1.5231,

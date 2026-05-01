@@ -36,11 +36,13 @@ function getTransactionId () {
  *  }
  */
 async function handle(event, ctx) {
-  // Verify JWT token
-  const isValid = await verifyJWT(event, ctx.contextId, ctx.xPair);
+  // Verify JWT token (skip if already verified at framework level, e.g. FaaS restHandler)
+  if (!ctx.authPayload) {
+    const isValid = await verifyJWT(event, ctx.contextId, ctx.xPair);
 
-  if (!isValid) {
-    return { error: 'Unauthorized' };
+    if (!isValid) {
+      return { error: 'Unauthorized' };
+    }
   }
 
   const ok = valid.number(

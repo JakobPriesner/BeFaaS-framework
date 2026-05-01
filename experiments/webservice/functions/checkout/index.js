@@ -96,19 +96,21 @@ function scalePrice (price, scalar) {
 }
 
 async function handle (event, ctx) {
-  // Verify JWT token
-  let isValid
-  try {
-    isValid = await verifyJWT(event, ctx.contextId, ctx.xPair)
-  } catch (err) {
-    if (err.isAuthTimeout) {
-      return { error: 'AuthTimeout', statusCode: 424 }
+  // Verify JWT token (skip if already verified at framework level, e.g. FaaS restHandler)
+  if (!ctx.authPayload) {
+    let isValid
+    try {
+      isValid = await verifyJWT(event, ctx.contextId, ctx.xPair)
+    } catch (err) {
+      if (err.isAuthTimeout) {
+        return { error: 'AuthTimeout', statusCode: 424 }
+      }
+      throw err
     }
-    throw err
-  }
 
-  if (!isValid) {
-    return { error: 'Unauthorized' }
+    if (!isValid) {
+      return { error: 'Unauthorized' }
+    }
   }
 
   const cart = await ctx.call('getcart', {

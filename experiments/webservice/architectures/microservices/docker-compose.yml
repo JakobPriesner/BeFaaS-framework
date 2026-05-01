@@ -1,10 +1,5 @@
 version: '3.8'
 
-# Docker Compose for local development of microservices architecture
-# Usage:
-#   1. Run build first: node build.js none _build
-#   2. Then: docker-compose up --build
-
 services:
   redis:
     image: redis:7-alpine

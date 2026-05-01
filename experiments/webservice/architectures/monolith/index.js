@@ -3,13 +3,10 @@ const Router = require('@koa/router')
 const bodyParser = require('koa-bodyparser')
 const path = require('path')
 
-// Import monolith call provider
 const { registerHandlers, createCallContext, initDb, getDb } = require('./call')
 
-// Import metrics for HTTP request timing
-const { startHandlerTiming, logColdStartIfNeeded } = require('./shared/metrics')
+const { startHandlerTiming } = require('./shared/metrics')
 
-// Initialize database connection at startup
 initDb('redis')
 
 // Import all backend functions
@@ -77,20 +74,14 @@ function ensureTemplatesInitialized () {
   }
 }
 
-// Create context object with direct function calling for monolith
-// Uses the shared call provider for all in-process calls
-// @param {Object} headers - Optional headers to propagate (e.g., { authorization: 'Bearer ...' })
 function createFunctionContext(headers = {}) {
   return createCallContext(headers.authorization || null)
 }
 
-// Middleware to inject function context (for ctx.call(), ctx.db, etc.)
 app.use(async (ctx, next) => {
-  // Extract Authorization header to propagate through call chain
   const authHeader = ctx.request.get('Authorization') || ctx.request.get('authorization')
   const headers = authHeader ? { authorization: authHeader } : {}
 
-  // Create function context with call, db, contextId, xPair
   const fnCtx = createFunctionContext(headers)
   ctx.call = fnCtx.call
   ctx.db = fnCtx.db
@@ -99,7 +90,6 @@ app.use(async (ctx, next) => {
   await next()
 })
 
-// Middleware for HTTP request timing (logs handler events for BEFAAS analysis)
 app.use(async (ctx, next) => {
   // Skip health checks from timing
   if (ctx.path === '/health') {
@@ -107,44 +97,32 @@ app.use(async (ctx, next) => {
     return
   }
 
-  // Build route string for logging (method:path)
   const route = `${ctx.method.toLowerCase()}:${ctx.path}`
 
-  // Start timing (also logs cold start if first request)
   const endTiming = startHandlerTiming(ctx.contextId, ctx.xPair, route)
 
   try {
     await next()
-    // Log successful request with status code
     endTiming(ctx.status)
   } catch (error) {
-    // Log failed request with 500 status
     endTiming(ctx.status || 500)
     throw error
   }
 })
 
-// Use body parser
 app.use(bodyParser())
 
-// ============================================
-// FRONTEND ROUTES (HTML pages)
-// ============================================
-
-// Wrap frontend handler to work with Koa context
 function wrapFrontendHandler (handler) {
   return async (koaCtx) => {
-    // Ensure templates are loaded before handling frontend requests
     ensureTemplatesInitialized()
 
-    // Create handler context that bridges Koa ctx to handler expectations
     const handlerCtx = {
       call: koaCtx.call,
       request: koaCtx.request,
       params: koaCtx.params,
       cookies: koaCtx.cookies,
       response: koaCtx.response,
-      state: koaCtx.state, // Per-request state for session storage (prevents race conditions)
+      state: koaCtx.state,
       get type() { return koaCtx.type },
       set type(v) { koaCtx.type = v },
       get body() { return koaCtx.body },
@@ -169,16 +147,10 @@ router.post('/setCurrency', wrapFrontendHandler(frontendHandlers.handleSetCurren
 router.post('/emptyCart', wrapFrontendHandler(frontendHandlers.handleEmptyCart))
 router.post('/addCartItem', wrapFrontendHandler(frontendHandlers.handleAddCartItem))
 
-// ============================================
-// API ROUTES (JSON endpoints)
-// ============================================
-
-// Health check endpoint
 router.get('/health', async (ctx) => {
   ctx.body = { status: 'ok', service: 'monolith-service' }
 })
 
-// Generic function call endpoint (for RPC-style calls)
 router.post('/call/:functionName', async (ctx) => {
   const { functionName } = ctx.params
   try {
@@ -191,7 +163,6 @@ router.post('/call/:functionName', async (ctx) => {
   }
 })
 
-// Direct function endpoints (API)
 router.post('/api/getcart', async (ctx) => {
   try {
     const result = await getCart(ctx.request.body, ctx)

@@ -3,7 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { logSection } = require('./utils');
 
-async function runBenchmark(experiment, workload, outputDir, authMode = 'none', architecture = 'faas') {
+async function runBenchmark(experiment, workload, outputDir, authMode = 'none', architecture = 'faas', algorithm = 'argon2id-eddsa') {
   logSection('Running Benchmark');
 
   const projectRoot = path.join(__dirname, '..', '..');
@@ -63,7 +63,7 @@ async function runBenchmark(experiment, workload, outputDir, authMode = 'none', 
       cwd: projectRoot,
       stdio: ['inherit', 'pipe', 'pipe'],
       shell: '/bin/bash',
-      env: { ...process.env, AUTH_MODE: authMode, ARCHITECTURE: architecture }
+      env: { ...process.env, AUTH_MODE: authMode, ARCHITECTURE: architecture, ALGORITHM: algorithm }
     });
 
     // Pipe output to both console and workload.log

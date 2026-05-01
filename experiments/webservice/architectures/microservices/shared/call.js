@@ -1,36 +1,20 @@
-/**
- * Microservices Call Provider
- *
- * Handles service-to-service calls in microservices architecture.
- *
- * Call Strategy:
- * - Same service: Direct in-process call (no network overhead)
- * - Different service: HTTP via internal Docker DNS or AWS Cloud Map
- *
- * Supports both local Docker Compose and AWS ECS/Cloud Map deployments.
- */
 
 const axios = require('axios')
 const crypto = require('crypto')
 
-// Shared utilities from architectures/shared
 const { BaseCallProvider, preparePayloadWithAuth, buildCallHeaders } = require('./arch-shared/call')
-const { functionToService, getServiceForFunction } = require('./arch-shared/serviceConfig')
+const { getServiceForFunction } = require('./arch-shared/serviceConfig')
 const { startRpcTiming, logRpcIn, startHandlerTiming, logColdStartIfNeeded } = require('./arch-shared/metrics')
 
-// Get Cloud Map namespace from environment (set by Terraform for AWS)
 const namespace = process.env.CLOUDMAP_NAMESPACE
 
-// Current service identifier (set by each microservice at startup)
 const currentService = process.env.CURRENT_SERVICE || null
 
-// Determine if running in AWS or local environment
 const isAWS = namespace && namespace !== 'local'
 
-// Registry for local handlers (populated by each service at startup)
 const localHandlers = {}
 
-// Build service URLs based on environment
+// eslint-disable-next-line multiline-ternary
 const serviceUrls = isAWS ? {
   // AWS Cloud Map DNS: service-name.namespace (port is the default container port)
   cart: `http://cart-service.${namespace}:3002`,
@@ -47,10 +31,7 @@ const serviceUrls = isAWS ? {
   frontend: process.env.FRONTEND_SERVICE_URL || 'http://frontend-service:3000'
 }
 
-/**
- * Get the HTTP endpoint for a function
- */
-function getFunctionEndpoint(functionName) {
+function getFunctionEndpoint (functionName) {
   const service = getServiceForFunction(functionName)
   if (!service || !serviceUrls[service]) {
     return null
@@ -64,39 +45,23 @@ function getFunctionEndpoint(functionName) {
   return `${serviceUrls[service]}/${functionName}`
 }
 
-/**
- * Register a local handler for direct invocation within the same service
- * @param {string} functionName - Name of the function
- * @param {function} handler - Handler function
- */
-function registerLocalHandler(functionName, handler) {
+function registerLocalHandler (functionName, handler) {
   localHandlers[functionName] = handler
 }
 
-/**
- * Generate a random ID (similar to lib.helper.generateRandomID)
- */
-function generateRandomID() {
+function generateRandomID () {
   return crypto.randomBytes(8).toString('hex')
 }
 
-/**
- * Microservices-specific call provider
- * Extends BaseCallProvider with same-service optimization
- * Instrumented with RPC timing for call graph analysis
- */
 class MicroservicesCallProvider extends BaseCallProvider {
-  constructor(options = {}) {
+  constructor (options = {}) {
     super(options)
     this.currentService = options.currentService || currentService
     this.contextId = options.contextId || null
     this.xPair = options.xPair || null
   }
 
-  /**
-   * Check if a function can be called locally (same service)
-   */
-  canCallLocally(functionName) {
+  canCallLocally (functionName) {
     const targetService = getServiceForFunction(functionName)
     return (
       this.currentService &&
@@ -105,22 +70,11 @@ class MicroservicesCallProvider extends BaseCallProvider {
     )
   }
 
-  /**
-   * Microservices don't have "direct invoke" like Lambda
-   * (but same-service calls are handled via canCallLocally)
-   */
-  canDirectInvoke(functionName) {
+  canDirectInvoke (functionName) {
     return false
   }
 
-  /**
-   * Call another microservice function
-   *
-   * If the target function is in the same service, calls directly in-process.
-   * Otherwise, makes an HTTP call to the target service.
-   * Instrumented with RPC timing for call graph analysis.
-   */
-  async call(functionName, payload) {
+  async call (functionName, payload) {
     const payloadWithHeaders = preparePayloadWithAuth(payload, this.authHeader)
 
     // Generate new xPair for this call (for call graph linking)
@@ -128,13 +82,11 @@ class MicroservicesCallProvider extends BaseCallProvider {
 
     // Same-service optimization: call directly in-process
     if (this.canCallLocally(functionName)) {
-      // Start RPC timing for local call
       const endTiming = startRpcTiming(
         this.contextId || 'unknown',
         this.xPair || 'unknown',
         functionName,
-        callXPair,
-        'local' // Call type is 'local' for in-process calls
+        callXPair
       )
 
       // Log incoming RPC on the target function side
@@ -142,10 +94,10 @@ class MicroservicesCallProvider extends BaseCallProvider {
 
       try {
         const result = await localHandlers[functionName](payloadWithHeaders)
-        endTiming(true)
+        endTiming()
         return result
       } catch (error) {
-        endTiming(false)
+        endTiming()
         console.error(`[LOCAL CALL ERROR] ${functionName}: ${error.message}`)
         throw error
       }
@@ -157,16 +109,13 @@ class MicroservicesCallProvider extends BaseCallProvider {
       throw new Error(`Unknown function: ${functionName}`)
     }
 
-    // Start RPC timing for HTTP call
     const endTiming = startRpcTiming(
       this.contextId || 'unknown',
       this.xPair || 'unknown',
       functionName,
-      callXPair,
-      'http' // Call type is 'http' for cross-service calls
+      callXPair
     )
 
-    // Build headers including tracing context
     const headers = buildCallHeaders({
       authHeader: this.authHeader,
       contextId: this.contextId,
@@ -178,10 +127,10 @@ class MicroservicesCallProvider extends BaseCallProvider {
         headers,
         timeout: 30000
       })
-      endTiming(true)
+      endTiming()
       return response.data
     } catch (error) {
-      endTiming(false)
+      endTiming()
       console.error(`[HTTP CALL ERROR] ${functionName}: ${error.message}`)
       if (error.response) {
         return error.response.data
@@ -191,36 +140,20 @@ class MicroservicesCallProvider extends BaseCallProvider {
   }
 }
 
-/**
- * Standalone call function (for backward compatibility with libConfig.js)
- */
-async function callService(functionName, payload, authHeader = null) {
+async function callService (functionName, payload, authHeader = null) {
   const provider = new MicroservicesCallProvider({ authHeader })
   return provider.call(functionName, payload)
 }
 
-/**
- * Create a call function bound to a specific auth context
- * @param {string|null} authHeader - Authorization header to propagate
- * @returns {function} - Bound call function
- */
-function createServiceCall(authHeader) {
+function createServiceCall (authHeader) {
   const provider = new MicroservicesCallProvider({ authHeader })
   return (functionName, payload) => provider.call(functionName, payload)
 }
 
-/**
- * Create a call context with auth and tracing propagation
- * @param {string|null} authHeader - Authorization header to propagate
- * @param {string|null} contextId - Context ID for tracing (optional, generates new if not provided)
- * @param {string|null} xPair - X-Pair ID for tracing (optional, generates new if not provided)
- * @returns {Object} - Context object with call method, contextId, xPair
- */
-function createCallContext(authHeader = null, contextId = null, xPair = null) {
+function createCallContext (authHeader = null, contextId = null, xPair = null) {
   const ctxId = contextId || generateRandomID()
   const pair = xPair || `${ctxId}-${generateRandomID()}`
 
-  // Create provider with full tracing context
   const provider = new MicroservicesCallProvider({
     authHeader,
     contextId: ctxId,
@@ -234,10 +167,7 @@ function createCallContext(authHeader = null, contextId = null, xPair = null) {
   }
 }
 
-/**
- * Configure and return lib-compatible object for microservices
- */
-function configureBeFaaSLib() {
+function configureBeFaaSLib () {
   const environment = isAWS ? `AWS (namespace: ${namespace})` : 'local Docker Compose'
   console.log(`Microservices HTTP calls configured for ${environment}`)
 
@@ -252,7 +182,6 @@ function configureBeFaaSLib() {
 // Create a lib-compatible mock object
 const lib = {
   call: callService,
-  // These are no-ops for microservices
   init: () => console.log('lib.init() - no-op for microservices'),
   shutdown: async () => console.log('lib.shutdown() - no-op for microservices'),
   configure: () => {},
@@ -277,7 +206,6 @@ module.exports = {
   localHandlers,
   getFunctionEndpoint,
   generateRandomID,
-  // Re-export metrics functions for convenience
   startHandlerTiming,
   logColdStartIfNeeded,
   logRpcIn

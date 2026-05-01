@@ -1,28 +1,14 @@
-/**
- * FaaS Call Provider
- *
- * Handles function-to-function calls in serverless (FaaS) architecture.
- *
- * Call Strategy:
- * - AWS Lambda-to-Lambda: Direct invoke (bypasses API Gateway, saves cost/latency)
- * - Cross-provider or fallback: HTTP via API Gateway
- *
- * Supports multiple cloud providers: AWS, Google, Azure, TinyFaaS, OpenFaaS, OpenWhisk
- */
 
 const _ = require('lodash')
 const fetch = require('node-fetch')
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda')
 
-// Shared utilities
 const { BaseCallProvider, preparePayloadWithAuth, buildCallHeaders } = require('./shared/call')
 const { startRpcTiming } = require('./shared/metrics')
 
-// Load experiment config (same as @befaas/lib)
 const helper = require('@befaas/lib/helper')
 const experiment = helper.loadExperiment()
 
-// Provider endpoints from environment
 const endpoints = {
   aws: process.env.AWS_LAMBDA_ENDPOINT,
   google: process.env.GOOGLE_CLOUDFUNCTION_ENDPOINT,
@@ -39,20 +25,13 @@ const publisherEndpoints = {
   tinyfaas: process.env.PUBLISHER_TINYFAAS_ENDPOINT
 }
 
-// ============================================================================
-// Direct Lambda Invocation (AWS Lambda-to-Lambda, bypasses API Gateway)
-// ============================================================================
-
-// Check if we're running in AWS Lambda
 const isLambda = !!process.env.AWS_LAMBDA_FUNCTION_NAME
 
-// Check if direct invoke is enabled (default: true when in Lambda)
 const directInvokeEnabled = process.env.DIRECT_INVOKE_ENABLED !== 'false'
 
-// Lambda client (lazy initialized)
 let lambdaClient = null
 
-function getLambdaClient() {
+function getLambdaClient () {
   if (!lambdaClient) {
     lambdaClient = new LambdaClient({
       region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1'
@@ -61,29 +40,19 @@ function getLambdaClient() {
   return lambdaClient
 }
 
-/**
- * Get the full Lambda function name from environment variable mapping
- * Environment variables are in format: LAMBDA_FN_FUNCTIONNAME = full-function-name
- */
-function getLambdaFunctionName(fn) {
+function getLambdaFunctionName (fn) {
   const envKey = `LAMBDA_FN_${fn.toUpperCase()}`
   return process.env[envKey] || null
 }
 
-/**
- * Check if direct Lambda invocation is available for a function
- */
-function isDirectInvokeAvailable(fn) {
+function isDirectInvokeAvailable (fn) {
   if (!isLambda || !directInvokeEnabled) {
     return false
   }
   return !!getLambdaFunctionName(fn)
 }
 
-/**
- * Directly invoke another Lambda function (bypassing API Gateway)
- */
-async function directInvoke(fn, payload, headers = {}) {
+async function directInvoke (fn, payload, headers = {}) {
   const functionName = getLambdaFunctionName(fn)
   if (!functionName) {
     throw new Error(`Direct invoke not available for function: ${fn}`)
@@ -91,7 +60,6 @@ async function directInvoke(fn, payload, headers = {}) {
 
   const client = getLambdaClient()
 
-  // Wrap payload in API Gateway v2 format (HTTP API)
   const event = {
     version: '2.0',
     routeKey: 'POST /call',
@@ -122,7 +90,6 @@ async function directInvoke(fn, payload, headers = {}) {
   const response = await client.send(command)
   const responsePayload = JSON.parse(Buffer.from(response.Payload).toString())
 
-  // Check for Lambda invocation errors
   if (response.FunctionError) {
     const errorMsg = `[DIRECT INVOKE ERROR] ${fn} failed: ${responsePayload.errorMessage || 'Unknown error'}`
     console.error(errorMsg)
@@ -132,7 +99,6 @@ async function directInvoke(fn, payload, headers = {}) {
     throw error
   }
 
-  // Parse the API Gateway response format
   if (responsePayload.statusCode && responsePayload.statusCode >= 400) {
     const errorMsg = `[DIRECT INVOKE ERROR] ${fn} returned ${responsePayload.statusCode}: ${responsePayload.body}`
     console.error(errorMsg)
@@ -143,7 +109,6 @@ async function directInvoke(fn, payload, headers = {}) {
     throw error
   }
 
-  // Parse and return the response body
   try {
     return typeof responsePayload.body === 'string'
       ? JSON.parse(responsePayload.body)
@@ -154,43 +119,23 @@ async function directInvoke(fn, payload, headers = {}) {
   }
 }
 
-// ============================================================================
-// FaaS Call Provider
-// ============================================================================
-
-/**
- * FaaS-specific call provider
- * Extends BaseCallProvider with AWS direct invoke and multi-provider support
- */
 class FaaSCallProvider extends BaseCallProvider {
-  constructor(options = {}) {
+  constructor (options = {}) {
     super(options)
     this.contextId = options.contextId || null
     this.xPair = options.xPair || null
   }
 
-  /**
-   * Check if direct Lambda invoke is available for a function
-   */
-  canDirectInvoke(functionName) {
+  canDirectInvoke (functionName) {
     const provider = _.get(experiment, `program.functions.${functionName}.provider`)
     return provider === 'aws' && isDirectInvokeAvailable(functionName)
   }
 
-  /**
-   * FaaS always calls remotely (no in-process calls)
-   */
-  canCallLocally(functionName) {
+  canCallLocally (functionName) {
     return false
   }
 
-  /**
-   * Call another function with optional Authorization header
-   *
-   * Automatically uses direct Lambda invocation for AWS-to-AWS calls when available,
-   * falling back to HTTP via API Gateway for cross-provider calls.
-   */
-  async call(functionName, payload) {
+  async call (functionName, payload) {
     if (!_.isObject(payload)) throw new Error('payload is not an object')
 
     let provider = ''
@@ -203,22 +148,18 @@ class FaaSCallProvider extends BaseCallProvider {
       if (!endpoints[provider]) throw new Error('unknown provider')
     }
 
-    // Prepare payload with auth header
     const bodyWithHeaders = preparePayloadWithAuth(payload, this.authHeader)
 
-    // Build headers
     const headers = buildCallHeaders({
       authHeader: this.authHeader,
       contextId: this.contextId,
       xPair: this.xPair
     })
 
-    // Try direct Lambda invocation for AWS targets (bypasses API Gateway)
     if (provider === 'aws' && functionName !== 'publisher' && isDirectInvokeAvailable(functionName)) {
       return await directInvoke(functionName, bodyWithHeaders, headers)
     }
 
-    // Fallback to HTTP via API Gateway
     const endpoint = functionName === 'publisher'
       ? `${publisherEndpoints[provider]}/call`
       : `${endpoints[provider]}/${functionName}/call`
@@ -249,10 +190,7 @@ class FaaSCallProvider extends BaseCallProvider {
   }
 }
 
-/**
- * Standalone call function (for backward compatibility)
- */
-async function faasCall(fn, contextId, xPair, payload, authHeader = null) {
+async function faasCall (fn, contextId, xPair, payload, authHeader = null) {
   const provider = new FaaSCallProvider({
     authHeader,
     contextId,
@@ -261,33 +199,19 @@ async function faasCall(fn, contextId, xPair, payload, authHeader = null) {
   return provider.call(fn, payload)
 }
 
-/**
- * Create a wrapped ctx.call function that propagates Authorization header
- * Includes metrics logging for inter-function call timing
- */
-function createAuthCall(ctx, authHeader) {
+function createAuthCall (ctx, authHeader) {
   const helper = require('@befaas/lib/helper')
 
   return async (fn, payload) => {
     const callXPair = `${ctx.contextId}-${helper.generateRandomID()}`
 
-    // Determine call type for metrics
-    const provider = _.get(experiment, `program.functions.${fn}.provider`)
-    const useDirectInvoke = provider === 'aws' && fn !== 'publisher' && isDirectInvokeAvailable(fn)
-    const callType = useDirectInvoke ? 'direct' : 'http'
+    const endTiming = startRpcTiming(ctx.contextId, ctx.xPair, fn, callXPair)
 
-    // Start timing with our metrics utility (logs to CloudWatch via console.log)
-    const endTiming = startRpcTiming(ctx.contextId, ctx.xPair, fn, callXPair, callType)
-
-    let success = true
     try {
       const res = await faasCall(fn, ctx.contextId, callXPair, payload, authHeader)
       return res
-    } catch (err) {
-      success = false
-      throw err
     } finally {
-      endTiming(success)
+      endTiming()
     }
   }
 }

@@ -34,10 +34,28 @@ function generateEd25519KeyPair() {
 }
 
 /**
- * Build Lambda@Edge function with embedded secrets
+ * Build Lambda@Edge function with embedded secrets.
+ *
+ * Two JWKS delivery modes are supported:
+ *   - 'runtime'   (default, production-faithful): the Lambda@Edge function
+ *                 fetches the Cognito JWKS on first use from the public
+ *                 /.well-known/jwks.json endpoint and caches it at module
+ *                 scope. Mirrors the aws-jwt-verify behaviour used by the
+ *                 backend Cognito strategy; required for a fair comparison.
+ *   - 'buildtime' (legacy, preserved for reproducibility of the original
+ *                 experiment series E44/E51/E100/E102/...): the deploy step
+ *                 fetches the JWKS once and embeds it as a JSON literal into
+ *                 the function source. No runtime fetch, no key rotation
+ *                 without redeployment.
+ *
+ * See evaluation/bedrohung_der_validität.tex for the construct validity
+ * discussion that motivates keeping both variants deployable.
  */
-async function buildEdgeLambda(projectRoot, cognitoPoolId, cognitoRegion, privateKey, cognitoClientId) {
-  console.log('Building Lambda@Edge function...');
+async function buildEdgeLambda(projectRoot, cognitoPoolId, cognitoRegion, privateKey, cognitoClientId, jwksMode = 'runtime') {
+  if (jwksMode !== 'runtime' && jwksMode !== 'buildtime') {
+    throw new Error(`Invalid jwksMode '${jwksMode}' (expected 'runtime' or 'buildtime')`);
+  }
+  console.log(`Building Lambda@Edge function (jwksMode=${jwksMode})...`);
 
   const edgeLambdaDir = path.join(
     projectRoot,
@@ -55,33 +73,43 @@ async function buildEdgeLambda(projectRoot, cognitoPoolId, cognitoRegion, privat
     fs.mkdirSync(buildDir, { recursive: true });
   }
 
-  // Fetch Cognito JWKS
-  console.log('  Fetching Cognito JWKS...');
+  // Select the source variant matching the requested jwksMode.
+  const sourceFileName = jwksMode === 'buildtime'
+    ? 'index.legacy-buildtime-jwks.js'
+    : 'index.js';
+  const sourcePath = path.join(edgeLambdaDir, sourceFileName);
+  let sourceCode = fs.readFileSync(sourcePath, 'utf8');
+  console.log(`  Source variant: ${sourceFileName}`);
+
   const jwksUrl = `https://cognito-idp.${cognitoRegion}.amazonaws.com/${cognitoPoolId}/.well-known/jwks.json`;
 
-  let jwks;
-  try {
-    const response = await fetch(jwksUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch JWKS: ${response.status}`);
+  if (jwksMode === 'runtime') {
+    // Inline only the JWKS URL; the function fetches keys at runtime.
+    sourceCode = sourceCode.replace(
+      /const COGNITO_JWKS_URL = process\.env\.COGNITO_JWKS_URL;/,
+      `const COGNITO_JWKS_URL = '${jwksUrl}';`
+    );
+  } else {
+    // Legacy variant: fetch JWKS once at deploy time and embed as JSON literal.
+    console.log('  Fetching Cognito JWKS for build-time embedding...');
+    let jwks;
+    try {
+      const response = await fetch(jwksUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch JWKS: ${response.status}`);
+      }
+      jwks = await response.json();
+      console.log(`  Fetched ${jwks.keys?.length || 0} keys from JWKS`);
+    } catch (error) {
+      console.error(`  Failed to fetch JWKS from ${jwksUrl}:`, error.message);
+      throw error;
     }
-    jwks = await response.json();
-    console.log(`  Fetched ${jwks.keys?.length || 0} keys from JWKS`);
-  } catch (error) {
-    console.error(`  Failed to fetch JWKS from ${jwksUrl}:`, error.message);
-    throw error;
+
+    sourceCode = sourceCode.replace(
+      /const COGNITO_JWKS = process\.env\.COGNITO_JWKS \? JSON\.parse\(process\.env\.COGNITO_JWKS\) : null;/,
+      `const COGNITO_JWKS = ${JSON.stringify(jwks)};`
+    );
   }
-
-  // Read the Lambda@Edge source
-  const sourcePath = path.join(edgeLambdaDir, 'index.js');
-  let sourceCode = fs.readFileSync(sourcePath, 'utf8');
-
-  // Embed secrets directly into the source code
-  // Replace the environment variable reads with hardcoded values
-  sourceCode = sourceCode.replace(
-    /const COGNITO_JWKS = process\.env\.COGNITO_JWKS \? JSON\.parse\(process\.env\.COGNITO_JWKS\) : null;/,
-    `const COGNITO_JWKS = ${JSON.stringify(jwks)};`
-  );
 
   sourceCode = sourceCode.replace(
     /const EDGE_PRIVATE_KEY = process\.env\.EDGE_PRIVATE_KEY;/,
@@ -141,11 +169,15 @@ async function deployEdgeAuth(projectName, originDomain, options = {}) {
     originProtocol = 'https-only',
     originHttpPort = 80,
     originHttpsPort = 443,
-    keyPair: providedKeyPair = null
+    keyPair: providedKeyPair = null,
+    selectiveEdgeRouting = false,
+    protectedPaths = null,
+    jwksMode = 'runtime'
   } = options;
 
   console.log('\n========================================');
   console.log('Deploying Edge Authentication');
+  console.log(`  jwksMode: ${jwksMode}`);
   console.log('========================================\n');
 
   // Step 1: Get Cognito configuration
@@ -209,7 +241,8 @@ async function deployEdgeAuth(projectName, originDomain, options = {}) {
     cognitoPoolId,
     awsRegion,
     keyPair.privateKey,
-    cognitoClientId
+    cognitoClientId,
+    jwksMode
   );
 
   // Step 4: Deploy CloudFront and Lambda@Edge
@@ -221,7 +254,7 @@ async function deployEdgeAuth(projectName, originDomain, options = {}) {
 
   // Write sensitive vars to auto.tfvars.json
   const tfvarsPath = path.join(edgeAuthDir, 'terraform.auto.tfvars.json');
-  fs.writeFileSync(tfvarsPath, JSON.stringify({
+  const tfvars = {
     project_name: projectName,
     origin_domain: originDomain,
     origin_protocol_policy: originProtocol,
@@ -231,8 +264,17 @@ async function deployEdgeAuth(projectName, originDomain, options = {}) {
     ed25519_public_key: keyPair.publicKey,
     ed25519_private_key: keyPair.privateKey,
     cloudfront_secret: cloudfrontSecret,
-    aws_region: awsRegion
-  }, null, 2));
+    aws_region: awsRegion,
+    selective_edge_routing: selectiveEdgeRouting
+  };
+  if (protectedPaths) {
+    tfvars.protected_paths = protectedPaths;
+  }
+  fs.writeFileSync(tfvarsPath, JSON.stringify(tfvars, null, 2));
+
+  if (selectiveEdgeRouting) {
+    console.log('  Selective edge routing ENABLED: only protected paths use Lambda@Edge');
+  }
 
   // Run Terraform
   let output;
@@ -366,11 +408,15 @@ async function updateEdgeAuth(originDomain, options = {}) {
   const {
     originProtocol = 'https-only',
     originHttpPort = 80,
-    originHttpsPort = 443
+    originHttpsPort = 443,
+    selectiveEdgeRouting = false,
+    protectedPaths = null,
+    jwksMode = 'runtime'
   } = options;
 
   console.log('\n========================================');
   console.log('Updating Edge Authentication (in-place)');
+  console.log(`  jwksMode: ${jwksMode}`);
   console.log('========================================\n');
 
   // Step 1: Read existing project_name + public key from edge-auth Terraform outputs
@@ -418,14 +464,15 @@ async function updateEdgeAuth(originDomain, options = {}) {
     cognitoPoolId,
     awsRegion,
     privateKey,
-    cognitoClientId
+    cognitoClientId,
+    jwksMode
   );
 
   // Step 5: Write terraform.auto.tfvars.json with same project_name + new origin
   console.log('\nStep 5: Applying Terraform changes...');
   const cloudfrontSecret = crypto.randomBytes(32).toString('hex');
   const tfvarsPath = path.join(edgeAuthDir, 'terraform.auto.tfvars.json');
-  fs.writeFileSync(tfvarsPath, JSON.stringify({
+  const updateTfvars = {
     project_name: projectName,
     origin_domain: originDomain,
     origin_protocol_policy: originProtocol,
@@ -435,8 +482,17 @@ async function updateEdgeAuth(originDomain, options = {}) {
     ed25519_public_key: publicKey,
     ed25519_private_key: privateKey,
     cloudfront_secret: cloudfrontSecret,
-    aws_region: awsRegion
-  }, null, 2));
+    aws_region: awsRegion,
+    selective_edge_routing: selectiveEdgeRouting
+  };
+  if (protectedPaths) {
+    updateTfvars.protected_paths = protectedPaths;
+  }
+  fs.writeFileSync(tfvarsPath, JSON.stringify(updateTfvars, null, 2));
+
+  if (selectiveEdgeRouting) {
+    console.log('  Selective edge routing ENABLED: only protected paths use Lambda@Edge');
+  }
 
   // Step 6: Run terraform init + apply (in-place update)
   let output;
